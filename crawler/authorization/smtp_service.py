@@ -10,6 +10,10 @@ ask again. Settings live outside the repository and the database:
 
 SMTP_* environment variables override the saved file. Plain-text SMTP is
 not supported: the connection uses STARTTLS or implicit TLS.
+
+Setup also asks once whether emails may be sent without a per-email
+confirmation (``auto_send``). That standing approval is saved with the
+settings and can be withdrawn with ``crawler email setup`` or ``forget``.
 """
 
 from __future__ import annotations
@@ -40,6 +44,10 @@ class SmtpConfig:
     username: str = ""
     from_addr: str = ""
     password: str = ""
+    # Standing approval, given once at setup: send authorization emails
+    # without a per-email confirmation (subject to the guards in
+    # manager.auto_send_blockers).
+    auto_send: bool = False
 
     def public(self) -> dict:
         data = asdict(self)
@@ -74,6 +82,7 @@ def load(settings: Settings | None = None) -> SmtpConfig | None:
             username=settings.smtp_username,
             from_addr=settings.smtp_from or settings.smtp_username,
             password=settings.smtp_password,
+            auto_send=settings.auto_send,
         )
     path = config_path(settings)
     if not path.exists():

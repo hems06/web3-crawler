@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_security: str = "starttls"  # starttls or ssl
+    # Cap on emails sent under the standing approval (auto_send).
+    auto_send_max_per_hour: int = 10
+    # Standing approval when SMTP comes from SMTP_* env vars instead of the
+    # saved file (the saved file stores its own answer).
+    auto_send: bool = False
     smtp_config_file: Path = Path.home() / ".config" / "web3-crawler" / "smtp.json"
     smtp_username: str = ""
     smtp_password: str = ""

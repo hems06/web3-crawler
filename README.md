@@ -121,12 +121,24 @@ recorded authorization evidence, confirmed scope and, when
 "Security Research / Bug Bounty Authorization Request — <Project>") with the
 eight questions about reports, testing permission, program status, rewards,
 scope, prohibited techniques, written authorization and preferred contact.
-Drafts are never sent automatically. To send one by email, run
-`crawler authorize send <id>`. The first time, it asks for your SMTP host,
-security (STARTTLS or SSL), port, username, password and from address, tests
-the login, and saves them so later sends don't ask again. After that, every
-send still shows the email and asks for your confirmation. `--yes` only works
-on a request you already approved with `authorize approve`.
+Drafts are never sent without your approval. To send one by email, run
+`crawler authorize send <id>` (or `--all`). The first time, it asks for your
+SMTP host, security (STARTTLS or SSL), port, username, password and from
+address, and asks once whether emails may be sent without asking each time.
+It tests the login and saves the answers, so you aren't asked again.
+
+With that standing approval on, `crawler authorize generate` sends the
+email right away and `authorize send` doesn't prompt. That only happens when:
+- the recipient is the program's published security contact,
+- no earlier request to that program was sent, and
+- fewer than `AUTO_SEND_MAX_PER_HOUR` (default 10) emails went out in the
+  last hour.
+
+Any other email is shown and needs your confirmation. Every send is in the
+audit log, and approvals given this way are recorded with the actor
+`standing approval (auto_send)`. To turn the standing approval off, run
+`crawler email setup` again or `crawler email forget`; `--no-send` drafts
+without sending.
 
 The settings are saved outside the repository and the database, in
 `~/.config/web3-crawler/smtp.json` (directory 0700, file 0600). The password

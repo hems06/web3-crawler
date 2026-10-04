@@ -109,6 +109,36 @@ def _after_sent(session: Session, req: AuthorizationRequest, via: str) -> None:
     )
 
 
+def auto_send_blockers(session: Session, req: AuthorizationRequest, settings: Settings | None = None) -> list[str]:
+    """Reasons this request may NOT go out under the standing approval.
+
+    An empty list means it can be sent without asking. Otherwise the user is
+    asked as usual.
+    """
+    settings = settings or get_settings()
+    program = session.get(Program, req.program_id)
+    reasons = []
+    if not req.recipient or not program.security_email or req.recipient.strip().lower() != program.security_email.strip().lower():
+        reasons.append("recipient is not the program's published security contact")
+    already = session.scalars(
+        select(AuthorizationRequest).where(
+            AuthorizationRequest.program_id == req.program_id,
+            AuthorizationRequest.status == RequestStatus.SENT,
+            AuthorizationRequest.id != req.id,
+        )
+    ).first()
+    if already is not None:
+        reasons.append(f"request #{already.id} was already sent to this program")
+    hour_ago = utcnow() - timedelta(hours=1)
+    recent = [
+        r for r in session.scalars(select(AuthorizationRequest).where(AuthorizationRequest.sent_at.is_not(None)))
+        if as_utc(r.sent_at) >= hour_ago
+    ]
+    if len(recent) >= settings.auto_send_max_per_hour:
+        reasons.append(f"rate limit: {len(recent)} emails sent in the last hour (AUTO_SEND_MAX_PER_HOUR={settings.auto_send_max_per_hour})")
+    return reasons
+
+
 def send_request(session: Session, req: AuthorizationRequest, settings: Settings | None = None, sender=None) -> None:
     """Send an APPROVED request through the configured provider."""
     settings = settings or get_settings()

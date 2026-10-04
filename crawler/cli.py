@@ -196,13 +196,25 @@ def authorize():
 @authorize.command("generate")
 @click.argument("program")
 @click.option("--to", "recipient", help="Recipient (defaults to the program's public security email).")
-def authorize_generate(program, recipient):
-    """Draft an authorization request email. Nothing is sent."""
+@click.option("--no-send", is_flag=True, help="Only draft, even if sending without asking is enabled.")
+def authorize_generate(program, recipient, no_send):
+    """Draft an authorization request email.
+
+    If you enabled sending without asking (`crawler email setup`) and the
+    draft goes to the program's published security contact, it is sent
+    right away; otherwise it stays a draft.
+    """
+    settings = get_settings()
     with session_scope() as s:
         req = manager.generate_request(s, _program(s, program), recipient)
+        cfg = smtp_service.load(settings) if smtp_service.effective_provider(settings) == "smtp" else None
+        if cfg and cfg.auto_send and not no_send and not manager.auto_send_blockers(s, req, settings):
+            s.commit()
+            _send_one(s, req, cfg, settings, yes=False)
+            return
         click.echo(f"Draft #{req.id} to {req.recipient or '(no recipient yet)'}\n")
         click.echo(f"Subject: {req.subject}\n\n{req.body}")
-        click.echo("Not sent. Approve with `crawler authorize approve %d`, or send it yourself and run "
+        click.echo("Not sent. Send with `crawler authorize send %d`, or send it yourself and run "
                    "`crawler authorize mark-sent %d`." % (req.id, req.id))
 
 
@@ -235,33 +247,63 @@ def authorize_approve(request_id, recipient):
 
 
 @authorize.command("send")
-@click.argument("request_id", type=int)
+@click.argument("request_id", type=int, required=False)
+@click.option("--all", "send_all", is_flag=True, help="Send every draft request.")
 @click.option("--yes", is_flag=True, help="Skip the preview prompt (only for a request you already approved).")
-def authorize_send(request_id, yes):
-    """Send a request by email.
+def authorize_send(request_id, send_all, yes):
+    """Send authorization requests by email.
 
-    The first time, this asks for your SMTP settings and saves them. Every
-    email is still shown and needs your confirmation before it is sent.
+    The first time, this asks for your SMTP settings and whether emails may
+    be sent without asking each time; both are saved. With that standing
+    approval, emails to a program's published security contact go out
+    directly (one per program, rate limited); anything else is shown for
+    confirmation.
     """
     settings = get_settings()
     if settings.email_provider == "none":
         raise click.ClickException("EMAIL_PROVIDER=none: sending is disabled. Send the draft yourself, then run `crawler authorize mark-sent`.")
-    if smtp_service.load(settings) is None:
+    if request_id is None and not send_all:
+        raise click.ClickException("give a request id or --all")
+    cfg = smtp_service.load(settings)
+    if cfg is None:
         click.echo("No SMTP settings saved yet. This is asked once and saved for later sends.")
-        _smtp_setup(settings)
+        cfg = _smtp_setup(settings)
     with session_scope() as s:
-        r = _get(s, AuthorizationRequest, request_id)
-        if yes and r.status != RequestStatus.APPROVED:
+        if send_all:
+            reqs = s.scalars(select(AuthorizationRequest).where(AuthorizationRequest.status.in_([RequestStatus.DRAFT, RequestStatus.APPROVED])).order_by(AuthorizationRequest.id)).all()
+            if not reqs:
+                click.echo("No draft requests to send.")
+        else:
+            reqs = [_get(s, AuthorizationRequest, request_id)]
+        for r in reqs:
+            _send_one(s, r, cfg, settings, yes)
+
+
+def _send_one(s, r, cfg, settings, yes) -> None:
+    if r.status not in (RequestStatus.DRAFT, RequestStatus.APPROVED):
+        click.echo(f"#{r.id} is {r.status}; skipped.")
+        return
+    blockers = manager.auto_send_blockers(s, r, settings) if cfg.auto_send else ["no standing approval saved"]
+    if cfg.auto_send and not blockers:
+        if r.status == RequestStatus.DRAFT:
+            manager.approve_request(s, r, actor="standing approval (auto_send)")
+    elif yes:
+        if r.status != RequestStatus.APPROVED:
             raise click.ClickException(f"--yes needs an approved request; #{r.id} is {r.status}. Run without --yes to review it.")
-        if not yes:
-            if not r.recipient:
-                r.recipient = click.prompt("Recipient email")
-            click.echo(f"\nTo: {r.recipient}\nSubject: {r.subject}\n\n{r.body}")
-            click.confirm("Send this email now?", abort=True)
-            if r.status == RequestStatus.DRAFT:
-                manager.approve_request(s, r)
-        manager.send_request(s, r, settings)
-        click.echo(f"#{r.id} sent to {r.recipient}.")
+    else:
+        if cfg.auto_send:
+            click.echo(f"#{r.id} needs your confirmation: {'; '.join(blockers)}.")
+        if not r.recipient:
+            r.recipient = click.prompt("Recipient email")
+        click.echo(f"\nTo: {r.recipient}\nSubject: {r.subject}\n\n{r.body}")
+        if not click.confirm("Send this email now?"):
+            click.echo(f"#{r.id} not sent.")
+            return
+        if r.status == RequestStatus.DRAFT:
+            manager.approve_request(s, r)
+    manager.send_request(s, r, settings)
+    s.commit()  # keep earlier sends recorded even if a later one fails
+    click.echo(f"#{r.id} sent to {r.recipient} ({r.program.name}).")
 
 
 @authorize.command("mark-sent")
@@ -283,7 +325,12 @@ def _smtp_setup(settings, test: bool = True) -> None:
     username = click.prompt("Username", default=existing.username if existing else "", show_default=bool(existing))
     password = click.prompt("Password (or app password)", hide_input=True, default="", show_default=False)
     from_addr = click.prompt("From address", default=(existing.from_addr if existing else "") or username)
-    cfg = smtp_service.SmtpConfig(host=host, port=port, security=security, username=username, from_addr=from_addr, password=password)
+    auto_send = click.confirm(
+        "Send authorization emails without asking each time? (only to a program's published security "
+        "contact, one per program, rate limited; change later with `crawler email setup`)",
+        default=existing.auto_send if existing else True,
+    )
+    cfg = smtp_service.SmtpConfig(host=host, port=port, security=security, username=username, from_addr=from_addr, password=password, auto_send=auto_send)
     if test:
         try:
             smtp_service.test_connection(cfg)
@@ -295,6 +342,7 @@ def _smtp_setup(settings, test: bool = True) -> None:
     path = smtp_service.save(cfg, settings)
     where = "OS keyring" if smtp_service._keyring() and password else str(path)
     click.echo(f"Saved SMTP settings to {path} (password in {where}). You won't be asked again.")
+    return cfg
 
 
 @main.group()
