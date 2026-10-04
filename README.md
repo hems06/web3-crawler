@@ -36,6 +36,9 @@ environment in `~/.web3-crawler`, installs the package, creates `.env` from
 | `WITH_DASHBOARD=1` | off | also install dashboard dependencies (Node 20+) |
 | `WITH_KEYRING=1` | off | keep the SMTP password in the OS keyring |
 
+To send authorization emails you also need SMTP settings: see
+[Setting up SMTP](#setting-up-smtp).
+
 For example: `curl -fsSL .../install.sh | WITH_DASHBOARD=1 WITH_KEYRING=1 bash`.
 
 For a manual install, use `pip install -e ".[dev]"` and `cp .env.example .env`.
@@ -226,6 +229,90 @@ keyring backend is available; otherwise it stays in that 0600 file.
 `EMAIL_PROVIDER=none` turns sending off entirely. To manage the settings, use
 `crawler email setup | show | test | forget`. If you would rather send from
 your own mail client, do that and run `crawler authorize mark-sent <id>`.
+
+### Setting up SMTP
+
+You need an email account that can send through SMTP. Most providers want an
+**app password** (a separate password just for this tool), not your normal
+login password.
+
+**1. Get the details for your provider**
+
+| Provider | Host | Security | Port | Password to use |
+|---|---|---|---|---|
+| Gmail / Google Workspace | `smtp.gmail.com` | `starttls` | 587 | App password: turn on 2-Step Verification, then create one at https://myaccount.google.com/apppasswords |
+| Microsoft 365 (work or school) | `smtp.office365.com` | `starttls` | 587 | Your password or app password; your admin must allow "Authenticated SMTP" for the mailbox |
+| Zoho Mail | `smtp.zoho.com` | `ssl` | 465 | App password (Zoho Accounts, Security, App Passwords) |
+| Fastmail | `smtp.fastmail.com` | `ssl` | 465 | App password (Settings, Privacy & Security, Integrations) |
+| iCloud Mail | `smtp.mail.me.com` | `starttls` | 587 | App-specific password from https://account.apple.com |
+| Any other provider | see its "SMTP settings" help page | `starttls` (587) or `ssl` (465) | | |
+
+Personal Outlook.com / Hotmail accounts often block password logins over
+SMTP. If the test fails with an authentication error there, use another
+account. Only encrypted connections are supported: plain port 25 is refused.
+
+**2. Enter the settings**
+
+The first `crawler` run asks for them. You can also run this at any time:
+
+```bash
+crawler email setup
+```
+
+It asks for:
+
+```
+SMTP host: smtp.gmail.com
+Security (starttls, ssl) [starttls]: starttls
+Port [587]: 587
+Username: you@gmail.com
+Password (or app password): ****************     (hidden while you type)
+From address [you@gmail.com]: you@gmail.com
+Send authorization emails without asking each time? ... [Y/n]: y
+Connected and logged in.
+Saved SMTP settings to ~/.config/web3-crawler/smtp.json ...
+```
+
+Use your full email address as the username. The from address should be the
+same address (or an alias your provider lets you send as), and should match
+the contact you gave in `crawler setup`, so programs reply to you.
+
+**3. Check it**
+
+```bash
+crawler email show    # what is saved (password hidden)
+crawler email test    # logs in again; sends nothing
+```
+
+Then `crawler authorize generate <program>` drafts and, with the standing
+approval on, sends the request. Use `crawler authorize send <id>` for a
+draft you made earlier.
+
+**Using environment variables instead** (for servers or Docker), put these
+in `.env`. They override the saved file:
+
+```bash
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURITY=starttls
+SMTP_USERNAME=you@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM=you@gmail.com
+AUTO_SEND=true        # send without asking each time (same limits as above)
+```
+
+**If the test fails**
+
+| Message | What to do |
+|---|---|
+| `Username and Password not accepted` / `535` | Use an app password, not your normal password; check the username is the full address |
+| `Connection refused` or timed out | Check host and port; some networks block 465/587, so try the other port with the matching security |
+| `wrong version number` / SSL error | Security and port don't match: use `starttls` with 587, `ssl` with 465 |
+| `SMTP AUTH is disabled` (Microsoft 365) | Ask your admin to enable Authenticated SMTP for your mailbox |
+
+To change the settings, run `crawler email setup` again. `crawler email
+forget` deletes them, including the keyring password.
 
 ## Response parser
 
