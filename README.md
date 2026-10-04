@@ -77,19 +77,50 @@ Collectors → Normalizer → Program Classifier → Private Program Filter
 
 | Stage | Code |
 |---|---|
-| Collectors | `crawler/collectors/` — seed YAML, RFC 9116 `security.txt`, public program pages, HackerOne Hacker API |
+| Collectors | `crawler/collectors/`: see "Sources" below |
 | Normalizer | `crawler/normalizer.py` |
-| Classifier | `crawler/classifier.py` — `PRIVATE_CONFIRMED`, `PRIVATE_POSSIBLE`, `PUBLIC`, `VDP_ONLY`, `UNKNOWN` |
+| Classifier | `crawler/classifier.py`: `PRIVATE_CONFIRMED`, `PRIVATE_POSSIBLE`, `PUBLIC`, `VDP_ONLY`, `UNKNOWN` |
 | Filter | `crawler/filters.py` + `config/platforms.yaml` |
-| Authorization manager | `crawler/authorization/` — email generator, state machine, response parser, optional SMTP/IMAP |
+| Authorization manager | `crawler/authorization/`: email generator, state machine, response parser, SMTP/IMAP |
 | Scope engine | `crawler/scope/engine.py` |
-| Asset intelligence | `crawler/assets/` — scope inventory, CT-log subdomains, Sourcify/Etherscan contract metadata |
-| Gate | `crawler/gate.py` — `check_authorization()` |
-| Research | `crawler/research/runner.py` — gated Slither static analysis only |
+| Asset intelligence | `crawler/assets/`: scope inventory, CT-log subdomains, Sourcify/Etherscan contract metadata |
+| Gate | `crawler/gate.py`: `check_authorization()` |
+| Research | `crawler/research/runner.py`: gated Slither static analysis only |
 | Scoring | `crawler/scoring.py` + `config/scoring.yaml` |
 | Audit / notifications | `crawler/audit.py`, `crawler/notifications.py` |
 | API / CLI / workers | `crawler/api/app.py`, `crawler/cli.py`, `crawler/workers/` |
 | Dashboard | `dashboard/` (React + Vite) |
+
+## Sources
+
+These work out of the box (configured in `config/sources.yaml`):
+
+| Source | What it finds | Needs |
+|---|---|---|
+| `bounty_targets` | Public Web3 programs on HackerOne, Bugcrowd, Intigriti, YesWeHack and Federacy, read from the public [bounty-targets-data](https://github.com/arkadiyt/bounty-targets-data) dataset (one download per platform, no platform crawling). Intigriti "apply to join" programs count as private candidates. | nothing |
+| `defillama_security_txt` | The largest Web3 protocols on DefiLlama (default top 75 by TVL) that publish a `security.txt` contact. Protocols whose policy points to a platform are tagged with it; the rest are "contact the security team" private candidates. | nothing |
+
+These need something from you:
+
+| Source | Needs |
+|---|---|
+| `hackerone` | `HACKERONE_API_USERNAME` / `HACKERONE_API_TOKEN`: lists programs you were invited to (`PRIVATE_CONFIRMED`) |
+| `security_txt` | domains in `config/watchlist.yaml` |
+| `program_page` | public security pages in `config/watchlist.yaml` |
+| `seed` | your own entries in `config/seeds/*.yaml` (see `example.yaml.sample`) |
+| ChatGPT extraction | `OPENAI_API_KEY` (optional, see below) |
+
+### ChatGPT extraction (optional)
+
+Set `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`, default `gpt-4o-mini`,
+or `OPENAI_BASE_URL` for any OpenAI-compatible endpoint). Discovery then
+sends the text of public pages it already reads (watchlist program pages,
+and the security policy page linked from each protocol's `security.txt`) to
+the model and asks for program type, max bounty, severity, scope, contacts
+and private/invite-only signals. Every contact and scope value the model
+returns must appear in the page text, or it is dropped. The model only fills
+discovery fields; it never changes authorization, scope confirmation or the
+research gate. `LLM_MAX_PAGES` (default 50) caps pages per run.
 
 Collectors read only public pages and official APIs you hold credentials
 for. The fetcher honours `robots.txt`, identifies itself, rate limits per
@@ -285,6 +316,7 @@ SQLite is the default database; the schema is portable to Postgres
 ```
 crawler                       # default: same as `crawler run`
 crawler run [--no-discover] [--exclude P]   # passive discovery + private candidates with next steps
+crawler notifications [--all]
 crawler discover [--collector NAME] [--seed FILE] [--exclude PLATFORM]
 crawler programs | private [--exclude P] [--classification C] [--min-bounty N] [--[no-]invite-required ...] [--json]
 crawler authorize generate|list|show|approve|send|mark-sent

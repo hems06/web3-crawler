@@ -26,7 +26,7 @@ def notify(session: Session, kind: str, message: str, program_id: int | None = N
     note = Notification(kind=kind, message=message, program_id=program_id)
     session.add(note)
     session.flush()
-    log.warning("NOTIFY [%s] %s", kind, message)
+    log.info("notification [%s] %s", kind, message)
     url = get_settings().notify_webhook_url
     if url:
         try:

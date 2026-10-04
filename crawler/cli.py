@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 import yaml
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import audit, reporting, status
 from .assets import intelligence
@@ -23,7 +23,7 @@ from .db import session_scope
 from .enums import AuditEventType, AuthState, RequestStatus, ResearchMethod
 from .filters import ProgramFilter
 from .gate import AuthorizationBlocked, check_authorization
-from .models import AuditEvent, AuthorizationRequest, AuthorizationResponse, Program, ResearchSession
+from .models import AuditEvent, AuthorizationRequest, AuthorizationResponse, Notification, Program, ResearchSession
 from .pipeline import discover as run_discovery
 from .research import runner
 from .scope import engine as scope_engine
@@ -117,8 +117,12 @@ def run(no_discover, exclude):
     settings = get_settings()
     with session_scope() as s:
         if not no_discover:
-            result = run_discovery(s, [cls(settings) for cls in REGISTRY.values()], settings, extra_exclusions=list(exclude))
-            click.echo(f"Discovery: {len(result.new)} new, {len(result.updated)} updated, {len(result.skipped)} skipped")
+            result = run_discovery(
+                s, [cls(settings) for cls in REGISTRY.values()], settings,
+                extra_exclusions=list(exclude), progress=lambda m: click.echo(m, err=True),
+            )
+            sources = ", ".join(f"{k}: {v}" for k, v in result.by_collector.items())
+            click.echo(f"Discovery: {len(result.new)} new, {len(result.updated)} updated, {len(result.skipped)} skipped ({sources})")
             for err in result.errors:
                 click.echo(f"  error {err}", err=True)
         for p in manager.expire_authorizations(s):
@@ -133,12 +137,39 @@ def run(no_discover, exclude):
             if step:
                 click.echo(f"  Next: {step.format(id=p.id)}")
             click.echo()
+        everything = ProgramFilter.from_settings(extra_exclusions=list(exclude), private_only=False)
+        everything.private_only = False
+        others = len(_list(s, everything)) - len(candidates)
+        if others:
+            click.echo(f"{others} other Web3 program(s) (public or VDP): `crawler programs`")
         pending = s.scalars(select(AuthorizationResponse).where(AuthorizationResponse.applied_at.is_(None))).all()
         if pending:
             click.echo(f"{len(pending)} reply(ies) waiting for review: " + ", ".join(f"crawler verify apply {r.id}" for r in pending))
+        unread = s.scalar(select(func.count()).select_from(Notification).where(Notification.read.is_(False)))
+        if unread:
+            click.echo(f"{unread} unread notification(s): `crawler notifications`")
         ready = s.scalars(select(Program).where(Program.authorization_status == AuthState.READY_FOR_RESEARCH)).all()
         click.echo(f"{len(ready)} program(s) research-ready. Research mode is {'ON' if settings.research_mode else 'OFF'}; "
                    "nothing is tested automatically.")
+
+
+@main.command()
+@click.option("--all", "show_all", is_flag=True, help="Include notifications already read.")
+@click.option("--limit", default=50, show_default=True)
+@click.option("--keep-unread", is_flag=True, help="Don't mark the shown notifications as read.")
+def notifications(show_all, limit, keep_unread):
+    """Show notifications (new private programs, replies, expiries...)."""
+    with session_scope() as s:
+        q = select(Notification).order_by(Notification.id.desc()).limit(limit)
+        if not show_all:
+            q = q.where(Notification.read.is_(False))
+        rows = s.scalars(q).all()
+        if not rows:
+            click.echo("No unread notifications." if not show_all else "No notifications.")
+        for n in reversed(rows):
+            click.echo(f"{n.created_at:%Y-%m-%d %H:%M} [{n.kind}] {n.message}")
+            if not keep_unread:
+                n.read = True
 
 
 def _filter_opts(f):

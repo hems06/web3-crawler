@@ -21,6 +21,11 @@ def env(tmp_path, monkeypatch):
     from crawler.authorization import smtp_service
 
     monkeypatch.setattr(smtp_service, "_keyring", lambda: None)
+    # No network in tests: the public-source collectors are tested with fixtures.
+    from crawler.collectors import BountyTargetsCollector, DefiLlamaSecurityTxtCollector
+
+    monkeypatch.setattr(BountyTargetsCollector, "enabled", lambda self: False)
+    monkeypatch.setattr(DefiLlamaSecurityTxtCollector, "enabled", lambda self: False)
     config.get_settings.cache_clear()
     db.configure(url)
     yield

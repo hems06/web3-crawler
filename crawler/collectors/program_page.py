@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
+from .. import llm
 from ..normalizer import EMAIL_RE
 from ..scope.engine import ADDRESS_RE
 from .base import Collector, FetchRefused
@@ -16,6 +17,13 @@ ADDR_INLINE = re.compile(r"0x[a-fA-F0-9]{40}")
 REPO_INLINE = re.compile(r"github\.com/[\w.-]+/[\w.-]+")
 BOUNTY_INLINE = re.compile(r"(?:up to|maximum|max)[^$\d]{0,20}(\$\s?[\d,.]+\s?[kKmM]?|[\d,.]+\s?[kKmM]?\s?(?:USDC|USDT|USD))", re.I)
 SEVERITY_INLINE = re.compile(r"\b(critical|high|medium|low)\b", re.I)
+
+
+def page_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return " ".join(soup.get_text(" ").split())
 
 
 def extract_page(url: str, html: str, project: str | None = None) -> dict:
@@ -77,4 +85,7 @@ class ProgramPageCollector(Collector):
             except (FetchRefused, Exception):  # noqa: BLE001
                 continue
             if resp.status_code == 200 and "html" in resp.headers.get("content-type", "html"):
-                yield extract_page(url, resp.text, page.get("project") if isinstance(page, dict) else None)
+                raw = extract_page(url, resp.text, page.get("project") if isinstance(page, dict) else None)
+                if llm.enabled(self.settings):
+                    raw = llm.merge(raw, llm.extract_program(page_text(resp.text), url, self.settings))
+                yield raw

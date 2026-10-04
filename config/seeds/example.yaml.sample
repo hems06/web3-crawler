@@ -2,7 +2,9 @@
 # an official docs page, a conversation with the security team). Every entry
 # must cite where the information came from in `source_url` or `evidence`.
 #
-# This file ships with one fictional example on reserved example domains.
+# This file is a fictional example on reserved example domains. Copy it to
+# a .yaml file in this folder to add your own programs; only *.yaml and
+# *.yml files are read.
 programs:
   - name: Example Protocol
     project_name: Example Labs

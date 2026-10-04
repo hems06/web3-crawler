@@ -1,0 +1,51 @@
+# Public sources the default `crawler` / `crawler discover` run reads.
+# Every source here is public and read-only. Requests honour robots.txt,
+# identify the crawler and are rate limited per host.
+
+# Public bug bounty listings aggregated from the platforms' own public
+# directories by https://github.com/arkadiyt/bounty-targets-data (refreshed
+# regularly). One file download per platform; no platform site is crawled.
+bounty_targets:
+  enabled: true
+  base_url: https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data
+  platforms: [hackerone, bugcrowd, intigriti, yeswehack, federacy]
+  # Keep only Web3 programs: a smart-contract/blockchain asset, a contract
+  # address, or one of these words in the program's name or website.
+  # Words match whole words; a trailing * also matches longer words
+  # ("coin*" matches Coinbase).
+  web3_keywords:
+    - crypto*
+    - blockchain*
+    - defi
+    - web3
+    - wallet
+    - smart contract
+    - ethereum
+    - solana
+    - bitcoin
+    - nft
+    - dao
+    - dex
+    - swap
+    - bridge
+    - staking
+    - stablecoin
+    - token*
+    - onchain
+    - layer 2
+    - rollup
+    - evm
+    - coin*
+    - chainlink
+    - metamask
+    - opensea
+
+# Web3 protocols from DefiLlama's public protocol list, checked for an
+# RFC 9116 security.txt. A protocol that publishes a security contact but no
+# public bounty listing is a "contact the security team" candidate.
+defillama_security_txt:
+  enabled: true
+  protocols_url: https://api.llama.fi/protocols
+  top_n: 75            # largest protocols by TVL
+  min_tvl_usd: 1000000
+  exclude_categories: [CEX]

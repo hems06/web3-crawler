@@ -30,6 +30,7 @@ log = logging.getLogger("crawler.pipeline")
 
 @dataclass
 class DiscoveryResult:
+    by_collector: dict[str, int] = field(default_factory=dict)
     new: list[int] = field(default_factory=list)
     updated: list[int] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
@@ -117,6 +118,7 @@ def discover(
     collectors: list[Collector] | None = None,
     settings: Settings | None = None,
     extra_exclusions: list[str] | None = None,
+    progress=None,
 ) -> DiscoveryResult:
     settings = settings or get_settings()
     pc = PlatformConfig(settings.load_yaml("platforms.yaml"), settings.platform_exclusion_list + list(extra_exclusions or []))
@@ -128,12 +130,15 @@ def discover(
     for collector in collectors:
         if not collector.enabled():
             continue
+        if progress:
+            progress(f"Reading {collector.name}...")
         try:
             raws = list(collector.collect())
         except Exception as exc:  # noqa: BLE001
             log.exception("collector %s failed", collector.name)
             result.errors.append(f"{collector.name}: {exc}")
             continue
+        result.by_collector[collector.name] = len(raws)
         for raw in raws:
             try:
                 np = normalize(raw, collector.name)

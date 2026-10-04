@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     request_delay_seconds: float = 2.0
 
     etherscan_api_key: str = ""
+
+    # Optional ChatGPT (OpenAI) extraction of program details from the public
+    # pages the collectors read. Off unless OPENAI_API_KEY is set.
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    llm_max_pages: int = 50  # per discovery run, to bound cost
     notify_webhook_url: str = ""
 
     @field_validator("email_provider")

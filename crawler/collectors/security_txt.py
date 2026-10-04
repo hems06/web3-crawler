@@ -65,6 +65,6 @@ class SecurityTxtCollector(Collector):
                     resp = self.fetcher.get(url)
                 except (FetchRefused, Exception):  # noqa: BLE001 - one bad domain must not stop the run
                     continue
-                if resp.status_code == 200 and "contact" in resp.text.lower():
+                if resp.status_code == 200 and "contact:" in resp.text.lower() and "<html" not in resp.text[:500].lower():
                     yield to_program(domain, parse_security_txt(resp.text), url)
                     break
