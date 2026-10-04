@@ -115,7 +115,7 @@ def send_request(session: Session, req: AuthorizationRequest, settings: Settings
     if req.status != RequestStatus.APPROVED:
         raise AuthorizationError(f"request #{req.id} must be approved before sending (status {req.status})")
     (sender or email_provider.send_email)(req.recipient, req.subject, req.body, settings)
-    _after_sent(session, req, settings.email_provider)
+    _after_sent(session, req, "smtp")
 
 
 def mark_sent_manually(session: Session, req: AuthorizationRequest) -> None:

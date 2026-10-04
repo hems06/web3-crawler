@@ -13,14 +13,14 @@ from sqlalchemy import select
 
 from . import audit, reporting, status
 from .assets import intelligence
-from .authorization import manager
+from .authorization import manager, smtp_service
 from .authorization.response_parser import ParsedResponse
 from .classifier import PRIORITY
 from .collectors import REGISTRY
 from .collectors.seed import SeedCollector
 from .config import PlatformConfig, get_settings
 from .db import session_scope
-from .enums import AuditEventType, AuthState, ResearchMethod
+from .enums import AuditEventType, AuthState, RequestStatus, ResearchMethod
 from .filters import ProgramFilter
 from .gate import AuthorizationBlocked, check_authorization
 from .models import AuditEvent, AuthorizationRequest, AuthorizationResponse, Program, ResearchSession
@@ -236,17 +236,30 @@ def authorize_approve(request_id, recipient):
 
 @authorize.command("send")
 @click.argument("request_id", type=int)
-@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("--yes", is_flag=True, help="Skip the preview prompt (only for a request you already approved).")
 def authorize_send(request_id, yes):
-    """Send an approved request (needs EMAIL_PROVIDER=smtp)."""
+    """Send a request by email.
+
+    The first time, this asks for your SMTP settings and saves them. Every
+    email is still shown and needs your confirmation before it is sent.
+    """
     settings = get_settings()
     if settings.email_provider == "none":
-        raise click.ClickException("EMAIL_PROVIDER=none: send the draft yourself, then run `crawler authorize mark-sent`.")
+        raise click.ClickException("EMAIL_PROVIDER=none: sending is disabled. Send the draft yourself, then run `crawler authorize mark-sent`.")
+    if smtp_service.load(settings) is None:
+        click.echo("No SMTP settings saved yet. This is asked once and saved for later sends.")
+        _smtp_setup(settings)
     with session_scope() as s:
         r = _get(s, AuthorizationRequest, request_id)
+        if yes and r.status != RequestStatus.APPROVED:
+            raise click.ClickException(f"--yes needs an approved request; #{r.id} is {r.status}. Run without --yes to review it.")
         if not yes:
-            click.echo(f"To: {r.recipient}\nSubject: {r.subject}\n\n{r.body}")
+            if not r.recipient:
+                r.recipient = click.prompt("Recipient email")
+            click.echo(f"\nTo: {r.recipient}\nSubject: {r.subject}\n\n{r.body}")
             click.confirm("Send this email now?", abort=True)
+            if r.status == RequestStatus.DRAFT:
+                manager.approve_request(s, r)
         manager.send_request(s, r, settings)
         click.echo(f"#{r.id} sent to {r.recipient}.")
 
@@ -259,6 +272,71 @@ def authorize_mark_sent(request_id):
         r = _get(s, AuthorizationRequest, request_id)
         manager.mark_sent_manually(s, r)
         click.echo(f"#{r.id} marked sent; {r.program.name} is now AWAITING_RESPONSE.")
+
+
+# -------------------------------------------------------------------- email
+def _smtp_setup(settings, test: bool = True) -> None:
+    existing = smtp_service.load(settings)
+    host = click.prompt("SMTP host", default=existing.host if existing else None)
+    security = click.prompt("Security", type=click.Choice(smtp_service.SECURITY_MODES), default=existing.security if existing else "starttls")
+    port = click.prompt("Port", type=int, default=existing.port if existing else (465 if security == "ssl" else 587))
+    username = click.prompt("Username", default=existing.username if existing else "", show_default=bool(existing))
+    password = click.prompt("Password (or app password)", hide_input=True, default="", show_default=False)
+    from_addr = click.prompt("From address", default=(existing.from_addr if existing else "") or username)
+    cfg = smtp_service.SmtpConfig(host=host, port=port, security=security, username=username, from_addr=from_addr, password=password)
+    if test:
+        try:
+            smtp_service.test_connection(cfg)
+            click.echo("Connected and logged in.")
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"Connection test failed: {exc}")
+            if not click.confirm("Save these settings anyway?", default=False):
+                raise click.Abort()
+    path = smtp_service.save(cfg, settings)
+    where = "OS keyring" if smtp_service._keyring() and password else str(path)
+    click.echo(f"Saved SMTP settings to {path} (password in {where}). You won't be asked again.")
+
+
+@main.group()
+def email():
+    """SMTP settings for sending authorization emails."""
+
+
+@email.command("setup")
+@click.option("--no-test", is_flag=True, help="Save without testing the connection.")
+def email_setup(no_test):
+    """Enter (or change) SMTP settings; saved for later sends."""
+    _smtp_setup(get_settings(), test=not no_test)
+
+
+@email.command("show")
+def email_show():
+    """Show the saved SMTP settings (password hidden)."""
+    settings = get_settings()
+    cfg = smtp_service.load(settings)
+    if cfg is None:
+        click.echo("No SMTP settings. Run `crawler email setup` or just `crawler authorize send <id>`.")
+        return
+    source = "environment" if settings.smtp_host else str(smtp_service.config_path(settings))
+    click.echo(f"source: {source}\nsending: {smtp_service.effective_provider(settings)}")
+    for k, v in cfg.public().items():
+        click.echo(f"{k}: {v}")
+
+
+@email.command("test")
+def email_test():
+    """Connect and log in with the saved settings (sends nothing)."""
+    cfg = smtp_service.load(get_settings())
+    if cfg is None:
+        raise click.ClickException("no SMTP settings saved")
+    smtp_service.test_connection(cfg)
+    click.echo("Connected and logged in.")
+
+
+@email.command("forget")
+def email_forget():
+    """Delete the saved SMTP settings and keyring password."""
+    click.echo("Removed saved SMTP settings." if smtp_service.forget(get_settings()) else "Nothing saved.")
 
 
 # ------------------------------------------------------------------- verify

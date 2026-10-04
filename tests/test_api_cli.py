@@ -38,11 +38,12 @@ def test_cli_private_output(discovered):
     assert "Status: WAITING_FOR_AUTHORIZATION" in out
 
 
-def test_cli_generate_does_not_send(discovered):
+def test_cli_generate_does_not_send(discovered, set_env):
     res = CliRunner().invoke(main, ["authorize", "generate", "Example Protocol"])
     assert res.exit_code == 0, res.output
     assert "Not sent." in res.output
-    res = CliRunner().invoke(main, ["authorize", "send", "1", "--yes"])
+    set_env(EMAIL_PROVIDER="none")
+    res = CliRunner().invoke(main, ["authorize", "send", "1"])
     assert res.exit_code != 0 and "EMAIL_PROVIDER=none" in res.output
 
 

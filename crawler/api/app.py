@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import reporting
-from ..authorization import manager
+from ..authorization import manager, smtp_service
 from ..authorization.state_machine import InvalidTransition
 from ..config import PlatformConfig, get_settings
 from ..db import get_sessionmaker
@@ -67,7 +67,7 @@ def settings_view():
         "require_bounty_confirmation": s.require_bounty_confirmation,
         "require_explicit_scope": s.require_explicit_scope,
         "authorization_expiry_days": s.authorization_expiry,
-        "email_provider": s.email_provider,
+        "email_provider": smtp_service.effective_provider(s),
         "excluded_platforms": sorted(pc.excluded_platforms),
         "excluded_program_types": sorted(pc.excluded_program_types),
     }

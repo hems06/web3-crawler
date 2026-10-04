@@ -14,6 +14,13 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_EXCLUSIONS", "")
     monkeypatch.setenv("PRIVATE_ONLY", "true")
     monkeypatch.setenv("REQUEST_DELAY_SECONDS", "0")
+    monkeypatch.setenv("SMTP_CONFIG_FILE", str(tmp_path / "smtpconf" / "smtp.json"))
+    for var in ("EMAIL_PROVIDER", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"):
+        monkeypatch.delenv(var, raising=False)
+    # Never touch a real OS keyring from tests.
+    from crawler.authorization import smtp_service
+
+    monkeypatch.setattr(smtp_service, "_keyring", lambda: None)
     config.get_settings.cache_clear()
     db.configure(url)
     yield

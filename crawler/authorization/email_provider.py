@@ -1,26 +1,20 @@
 """Optional, user-controlled email integration.
 
-EMAIL_PROVIDER=none (default): nothing is ever sent; the user copies the
-draft into their own mail client and marks it sent.
-EMAIL_PROVIDER=smtp: an email is sent only after the user approved that
-specific request (manager.approve_request) and then asked to send it.
+Sending goes through smtp_service, which asks for SMTP settings once and
+saves them. Each email is still sent only after the user approved that
+specific request. EMAIL_PROVIDER=none disables sending entirely.
 """
 
 from __future__ import annotations
 
 import email
 import imaplib
-import smtplib
-import ssl
 from dataclasses import dataclass
-from email.message import EmailMessage
 from email.utils import parseaddr
 
 from ..config import Settings, get_settings
-
-
-class EmailNotConfigured(RuntimeError):
-    pass
+from . import smtp_service
+from .smtp_service import EmailNotConfigured  # noqa: F401 - re-exported
 
 
 @dataclass
@@ -32,19 +26,7 @@ class InboundEmail:
 
 
 def send_email(to: str, subject: str, body: str, settings: Settings | None = None) -> None:
-    settings = settings or get_settings()
-    if settings.email_provider != "smtp" or not settings.smtp_host:
-        raise EmailNotConfigured("EMAIL_PROVIDER is not smtp or SMTP_HOST is empty")
-    msg = EmailMessage()
-    msg["From"] = settings.smtp_from or settings.smtp_username
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body)
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
-        smtp.starttls(context=ssl.create_default_context())
-        if settings.smtp_username:
-            smtp.login(settings.smtp_username, settings.smtp_password)
-        smtp.send_message(msg)
+    smtp_service.send(to, subject, body, settings)
 
 
 def _plain_body(msg: email.message.Message) -> str:

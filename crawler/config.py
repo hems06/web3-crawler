@@ -38,9 +38,13 @@ class Settings(BaseSettings):
     authorization_expiry: int = 90  # days
     research_mode: bool = False
 
-    email_provider: str = "none"
+    # "" (unset): send through saved SMTP settings if any, else drafts only.
+    # "none": never send. "smtp": send (settings from env or the saved file).
+    email_provider: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
+    smtp_security: str = "starttls"  # starttls or ssl
+    smtp_config_file: Path = Path.home() / ".config" / "web3-crawler" / "smtp.json"
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from: str = ""
@@ -63,9 +67,9 @@ class Settings(BaseSettings):
     @field_validator("email_provider")
     @classmethod
     def _provider(cls, v: str) -> str:
-        v = (v or "none").lower()
-        if v not in {"none", "smtp"}:
-            raise ValueError("EMAIL_PROVIDER must be 'none' or 'smtp'")
+        v = (v or "").strip().lower()
+        if v not in {"", "none", "smtp"}:
+            raise ValueError("EMAIL_PROVIDER must be empty, 'none' or 'smtp'")
         return v
 
     @property

@@ -121,10 +121,21 @@ recorded authorization evidence, confirmed scope and, when
 "Security Research / Bug Bounty Authorization Request — <Project>") with the
 eight questions about reports, testing permission, program status, rewards,
 scope, prohibited techniques, written authorization and preferred contact.
-Drafts are never sent automatically. With `EMAIL_PROVIDER=none` (default)
-you send them yourself and run `mark-sent`. With `EMAIL_PROVIDER=smtp`, a
-draft must be approved (`authorize approve`) and then sent with
-`authorize send`, which shows the email and asks again.
+Drafts are never sent automatically. To send one by email, run
+`crawler authorize send <id>`. The first time, it asks for your SMTP host,
+security (STARTTLS or SSL), port, username, password and from address, tests
+the login, and saves them so later sends don't ask again. After that, every
+send still shows the email and asks for your confirmation. `--yes` only works
+on a request you already approved with `authorize approve`.
+
+The settings are saved outside the repository and the database, in
+`~/.config/web3-crawler/smtp.json` (directory 0700, file 0600). The password
+goes to the OS keyring when `pip install ".[keyring]"` is installed and a
+keyring backend is available; otherwise it stays in that 0600 file.
+`SMTP_*` environment variables override the saved file, and
+`EMAIL_PROVIDER=none` turns sending off entirely. To manage the settings, use
+`crawler email setup | show | test | forget`. If you would rather send from
+your own mail client, do that and run `crawler authorize mark-sent <id>`.
 
 ## Response parser
 
@@ -228,7 +239,7 @@ See `.env.example`. Key settings:
 | `REQUIRE_EXPLICIT_SCOPE` | `true` | only confirmed scope counts |
 | `AUTHORIZATION_EXPIRY` | `90` | days, when a reply gives no expiry |
 | `RESEARCH_MODE` | `false` | master switch for research actions |
-| `EMAIL_PROVIDER` | `none` | `none` or `smtp` |
+| `EMAIL_PROVIDER` | empty | empty = use saved SMTP settings if any; `none` = never send; `smtp` = send |
 
 SQLite is the default database; the schema is portable to Postgres
 (`pip install ".[postgres]"` and set `DATABASE_URL`).
@@ -241,6 +252,7 @@ crawler run [--no-discover] [--exclude P]   # passive discovery + private candid
 crawler discover [--collector NAME] [--seed FILE] [--exclude PLATFORM]
 crawler programs | private [--exclude P] [--classification C] [--min-bounty N] [--[no-]invite-required ...] [--json]
 crawler authorize generate|list|show|approve|send|mark-sent
+crawler email setup|show|test|forget
 crawler verify response|apply|confirm|bounty|expire|inbox
 crawler scope show|import|check
 crawler assets PROGRAM [--passive]
