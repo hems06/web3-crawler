@@ -1,0 +1,34 @@
+# Seed programs you know about from legitimate sources (a direct invitation,
+# an official docs page, a conversation with the security team). Every entry
+# must cite where the information came from in `source_url` or `evidence`.
+#
+# This file ships with one fictional example on reserved example domains.
+programs:
+  - name: Example Protocol
+    project_name: Example Labs
+    protocol_name: Example Protocol
+    platform: direct
+    program_url: https://example.com/security
+    source_url: https://example.com/security
+    program_type: private
+    # Set to true only when the project has officially acknowledged that the
+    # private program exists (e.g. you received an invitation).
+    private_acknowledged: false
+    listed_scope:
+      - type: domain
+        value: app.example.com
+      - type: contract
+        value: "0x0000000000000000000000000000000000000001"
+        chain: Ethereum
+    listed_out_of_scope:
+      - third_party_services
+      - denial_of_service
+    max_severity: critical
+    max_bounty: "$50,000"
+    payment_info: USDC on Ethereum
+    safe_harbor: unknown
+    disclosure_policy: Coordinated disclosure
+    program_status: active
+    last_updated: 2026-09-01
+    security_email: security@example.com
+    notes: "Invite-only. Contact the security team to request access."

@@ -1,0 +1,25 @@
+# Opportunity score weights. Each component is scored 0..1 and the final
+# score is the weighted average scaled to 0..100. Set a weight to 0 to ignore
+# a component.
+#
+# Researcher reputation, submission counts, platform popularity, leaderboards
+# and historical payouts are intentionally not inputs.
+weights:
+  authorization_status: 3.0
+  scope_clarity: 2.0
+  bounty_available: 2.0
+  max_bounty: 1.5
+  program_freshness: 1.0
+  asset_quality: 1.0
+  smart_contract_availability: 1.0
+  scope_size: 0.5
+  competition_level: 1.0
+
+# max_bounty is scaled logarithmically up to this USD value (=1.0).
+max_bounty_cap_usd: 1000000
+# Programs updated within this many days get full freshness credit; credit
+# decays linearly to 0 at stale_days.
+fresh_days: 30
+stale_days: 365
+# scope_size saturates at this many in-scope assets.
+scope_size_cap: 25

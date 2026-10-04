@@ -1,0 +1,106 @@
+# Platform registry and exclusion rules.
+#
+# Everything here can be changed without touching source code.
+# PLATFORM_EXCLUSIONS in the environment and `--exclude` on the CLI add to
+# `excluded_platforms`; they never remove entries from it.
+
+excluded_platforms:
+  - immunefi
+
+# Names from `program_type_definitions` below. A program is excluded when its
+# own access properties match a definition. This is deliberately NOT "every
+# platform that shows researcher reputation": a platform can have a leaderboard
+# while the specific program is open to anyone.
+excluded_program_types:
+  - reputation_based
+
+# How each program type name maps onto the four access properties recorded for
+# every platform and program. All listed properties must match.
+program_type_definitions:
+  reputation_based:
+    platform_reputation_required: true
+  invite_only:
+    invite_required: true
+  application_based:
+    application_required: true
+  private_supported:
+    private_program_supported: true
+
+# Defaults for programs collected from each platform. A collector that finds
+# program-level evidence (for example an "apply to join" button) overrides the
+# platform default for that program only. Values are best-effort starting
+# points; edit them to match your own experience with each platform.
+platforms:
+  immunefi:
+    name: Immunefi
+    url: https://immunefi.com
+    has_reputation_system: true
+    platform_reputation_required: false
+    invite_required: false
+    application_required: false
+    private_program_supported: true
+  hackerone:
+    name: HackerOne
+    url: https://hackerone.com
+    has_reputation_system: true
+    platform_reputation_required: true
+    invite_required: true
+    application_required: false
+    private_program_supported: true
+  bugcrowd:
+    name: Bugcrowd
+    url: https://bugcrowd.com
+    has_reputation_system: true
+    platform_reputation_required: true
+    invite_required: true
+    application_required: false
+    private_program_supported: true
+  hackenproof:
+    name: HackenProof
+    url: https://hackenproof.com
+    has_reputation_system: true
+    platform_reputation_required: false
+    invite_required: false
+    application_required: false
+    private_program_supported: true
+  intigriti:
+    name: Intigriti
+    url: https://www.intigriti.com
+    has_reputation_system: true
+    platform_reputation_required: true
+    invite_required: true
+    application_required: false
+    private_program_supported: true
+  yeswehack:
+    name: YesWeHack
+    url: https://www.yeswehack.com
+    has_reputation_system: true
+    platform_reputation_required: true
+    invite_required: true
+    application_required: false
+    private_program_supported: true
+  cantina:
+    name: Cantina
+    url: https://cantina.xyz
+    has_reputation_system: true
+    platform_reputation_required: false
+    invite_required: false
+    application_required: true
+    private_program_supported: true
+  direct:
+    # Programs run by the project itself (security.txt, docs page, email).
+    name: Direct (project-run)
+    url: null
+    has_reputation_system: false
+    platform_reputation_required: false
+    invite_required: false
+    application_required: false
+    private_program_supported: true
+  unknown:
+    name: Unknown
+    url: null
+    has_reputation_system: false
+    platform_reputation_required: false
+    invite_required: false
+    application_required: false
+    private_program_supported: false

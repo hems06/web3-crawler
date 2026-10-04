@@ -1,0 +1,10 @@
+# Projects to check with the passive collectors. Only public pages are read,
+# robots.txt is honoured and requests are rate limited.
+#
+# security_txt: domains whose /.well-known/security.txt should be read.
+# program_pages: public bug bounty / security policy pages to read.
+security_txt: []
+#  - example.com
+program_pages: []
+#  - url: https://example.com/security
+#    project: Example Protocol

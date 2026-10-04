@@ -1,0 +1,49 @@
+# SQLite by default (data/ volume). To use Postgres, start with
+# `docker compose --profile postgres up` and set DATABASE_URL in .env to
+# postgresql+psycopg://crawler:crawler@postgres:5432/crawler
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/crawler.db}
+    REDIS_URL: redis://redis:6379/0
+  volumes:
+    - ./data:/app/data
+    - ./config:/app/config:ro
+  depends_on: [redis]
+
+services:
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+
+  worker:
+    <<: *app
+    # Discovery and housekeeping only. Research jobs use a separate queue
+    # that no worker consumes unless you start one explicitly.
+    command: celery -A crawler.workers.celery_app worker -Q discovery --loglevel=info
+
+  beat:
+    <<: *app
+    command: celery -A crawler.workers.celery_app beat --loglevel=info
+
+  dashboard:
+    build: ./dashboard
+    ports: ["3000:80"]
+    depends_on: [api]
+
+  redis:
+    image: redis:7-alpine
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler
+      POSTGRES_DB: crawler
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
