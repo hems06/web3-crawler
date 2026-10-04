@@ -29,7 +29,7 @@ class PoliteFetcher:
         self.settings = settings or get_settings()
         self.client = client or httpx.Client(
             headers={"User-Agent": self.settings.crawler_user_agent},
-            timeout=20,
+            timeout=httpx.Timeout(15, connect=10),
             follow_redirects=True,
         )
         self._robots: dict[str, robotparser.RobotFileParser | None] = {}
@@ -61,22 +61,40 @@ class PoliteFetcher:
             time.sleep(wait)
         self._last_hit[host] = time.monotonic()
 
-    def get(self, url: str, check_robots: bool = True, **kwargs) -> httpx.Response:
+    def get(self, url: str, check_robots: bool = True, deadline: float | None = None, **kwargs) -> httpx.Response:
+        """GET with a hard limit on the whole request (not just each read),
+        so a slow server can't stall a run."""
         if not url.startswith("https://"):
             raise FetchRefused(f"only https URLs are fetched: {url}")
         if check_robots and not self.allowed(url):
             raise FetchRefused(f"robots.txt disallows {url}")
         self._throttle(urlparse(url).netloc)
-        resp = self.client.get(url, **kwargs)
-        if resp.status_code in (401, 403):
-            raise FetchRefused(f"{url} requires authentication ({resp.status_code}); not bypassing")
-        return resp
+        limit = deadline or self.settings.fetch_timeout_seconds
+        start = time.monotonic()
+        with self.client.stream("GET", url, **kwargs) as stream:
+            if stream.status_code in (401, 403):
+                raise FetchRefused(f"{url} requires authentication ({stream.status_code}); not bypassing")
+            chunks = []
+            try:
+                for chunk in stream.iter_raw():
+                    chunks.append(chunk)
+                    if time.monotonic() - start > limit:
+                        raise httpx.ReadTimeout(f"{url} took longer than {limit:.0f}s", request=stream.request)
+            except httpx.StreamConsumed:  # body already in memory (e.g. a mock transport)
+                return stream
+            return httpx.Response(stream.status_code, headers=stream.headers, content=b"".join(chunks), request=stream.request)
 
 
 class Collector:
     """Yields raw program dicts in the shape normalizer.normalize() expects."""
 
     name = "base"
+    # Set by the pipeline during a run: callable(str) showing live progress.
+    progress = None
+
+    def note(self, message: str) -> None:
+        if self.progress:
+            self.progress(message)
 
     def __init__(self, settings: Settings | None = None, fetcher: PoliteFetcher | None = None):
         self.settings = settings or get_settings()

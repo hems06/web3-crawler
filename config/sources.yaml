@@ -50,6 +50,7 @@ defillama_security_txt:
   enabled: true
   protocols_url: https://api.llama.fi/protocols
   top_n: 75            # largest protocols by TVL
+  workers: 8           # sites read at the same time (each site is still rate limited)
   min_tvl_usd: 1000000
   exclude_categories: [CEX]
   # No security.txt: look for a security / bug bounty link on the homepage

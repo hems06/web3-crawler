@@ -195,13 +195,13 @@ class BountyTargetsCollector(Collector):
     def collect(self):
         cfg = self.config()
         keywords = cfg.get("web3_keywords") or []
-        for platform in cfg.get("platforms") or []:
-            convert = CONVERTERS.get(platform)
-            if convert is None:
-                continue
+        platforms = [p for p in cfg.get("platforms") or [] if p in CONVERTERS]
+        for n, platform in enumerate(platforms, 1):
+            convert = CONVERTERS[platform]
             url = f"{cfg['base_url'].rstrip('/')}/{platform}_data.json"
+            self.note(f"bounty listings {n}/{len(platforms)}: {platform}")
             try:
-                resp = self.fetcher.get(url)
+                resp = self.fetcher.get(url, deadline=120)  # files are several MB
                 resp.raise_for_status()
                 entries = resp.json()
             except Exception as exc:  # noqa: BLE001 - one platform failing must not stop the rest

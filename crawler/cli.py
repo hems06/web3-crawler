@@ -78,6 +78,51 @@ def main(ctx):
         ctx.invoke(run)
 
 
+class _Progress:
+    """Live progress on stderr. On a terminal, item updates overwrite one
+    line; otherwise they print as lines at most every few seconds."""
+
+    def __init__(self):
+        self.tty = sys.stderr.isatty()
+        self.shown = False
+        self.last = 0.0
+
+    def __call__(self, message: str, transient: bool = False) -> None:
+        import shutil
+        import time
+
+        if not transient:
+            self.clear()
+            click.echo(message, err=True)
+            return
+        if self.tty:
+            width = shutil.get_terminal_size((80, 20)).columns - 1
+            sys.stderr.write("\r\033[K" + message[:width])
+            sys.stderr.flush()
+            self.shown = True
+        elif time.monotonic() - self.last >= 5:
+            self.last = time.monotonic()
+            click.echo(message, err=True)
+
+    def clear(self) -> None:
+        if self.shown:
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+            self.shown = False
+
+
+def _discover_with_progress(s, collectors, settings, exclude):
+    progress = _Progress()
+    click.echo("Press Ctrl+C to stop; programs found so far are kept.", err=True)
+    try:
+        result = run_discovery(s, collectors, settings, extra_exclusions=list(exclude), progress=progress)
+    finally:
+        progress.clear()
+    if result.interrupted:
+        click.echo("Stopped early. Programs found before stopping were saved.", err=True)
+    return result
+
+
 def _should_offer_setup() -> bool:
     import os
 
@@ -174,7 +219,7 @@ def discover(collectors, seeds, exclude):
     if seeds:
         chosen = [c for c in chosen if c.name != "seed"] + [SeedCollector(settings, paths=list(seeds))]
     with session_scope() as s:
-        result = run_discovery(s, chosen, settings, extra_exclusions=list(exclude))
+        result = _discover_with_progress(s, chosen, settings, exclude)
     click.echo(f"new: {len(result.new)}  updated: {len(result.updated)}  skipped: {len(result.skipped)}")
     for line in result.skipped:
         click.echo(f"  skipped {line}")
@@ -207,10 +252,7 @@ def run(no_discover, exclude):
     settings = get_settings()
     with session_scope() as s:
         if not no_discover:
-            result = run_discovery(
-                s, [cls(settings) for cls in REGISTRY.values()], settings,
-                extra_exclusions=list(exclude), progress=lambda m: click.echo(m, err=True),
-            )
+            result = _discover_with_progress(s, [cls(settings) for cls in REGISTRY.values()], settings, exclude)
             sources = ", ".join(f"{k}: {v}" for k, v in result.by_collector.items())
             click.echo(f"Discovery: {len(result.new)} new, {len(result.updated)} updated, {len(result.skipped)} skipped ({sources})")
             for err in result.errors:

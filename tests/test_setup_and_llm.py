@@ -225,3 +225,84 @@ def test_repeated_other_failures_turn_model_off(set_env):
     for i in range(llm.MAX_CONSECUTIVE_FAILURES):
         llm.extract_program(f"Bug bounty {i}.", "https://p.example", s, client)
     assert not llm.enabled(s) and "in a row" in llm.disabled_reason()
+
+
+# ------------------------------------------------- progress, timeouts, Ctrl+C
+def test_rate_limit_waits_are_capped_per_run(set_env, monkeypatch):
+    s = set_env(OPENAI_API_KEY="sk-test", LLM_MAX_WAIT_SECONDS=60)
+    waits = []
+    monkeypatch.setattr(llm, "_sleep", waits.append)
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: _err(429, "rate_limit_exceeded", {"retry-after": "25"})))
+    assert llm.extract_program("Bug bounty.", "https://w.example", s, client) == {}
+    assert waits == [25, 25]  # a third wait would pass the 60s cap
+    assert not llm.enabled(s)
+
+
+def test_fetch_has_a_hard_deadline(set_env):
+    import time as _time
+
+    import pytest
+
+    from crawler.collectors.base import PoliteFetcher
+
+    s = set_env(FETCH_TIMEOUT_SECONDS="0.2")
+
+    class Slow(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(50):
+                _time.sleep(0.02)
+                yield b"x"
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, stream=Slow())
+
+    f = PoliteFetcher(s, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(httpx.ReadTimeout):
+        f.get("https://slow.example/page")
+
+
+def test_ctrl_c_keeps_programs_found_so_far(session):
+    from crawler.models import Program
+    from crawler.pipeline import discover
+
+    from .conftest import SEED
+
+    class Interrupted:
+        name = "test"
+        progress = None
+
+        def enabled(self):
+            return True
+
+        def collect(self):
+            yield SEED
+            raise KeyboardInterrupt
+
+    messages = []
+    result = discover(session, [Interrupted()], progress=lambda m, transient=False: messages.append(m))
+    assert result.interrupted and len(result.new) == 1
+    assert session.query(Program).count() == 1
+    assert messages == ["Reading test..."]
+
+
+def test_collectors_report_progress(set_env):
+    from crawler.pipeline import discover
+
+    seen = []
+
+    def handler(req):
+        if req.url.path.endswith("robots.txt"):
+            return httpx.Response(404)
+        return httpx.Response(200, json=[H1] if "hackerone" in req.url.path else [])
+
+    from crawler import db
+
+    c = BountyTargetsCollector(config.get_settings(), fetcher=_fetcher(handler))
+    c.enabled = lambda: True
+    s = db.get_sessionmaker()()
+    discover(s, [c], progress=lambda m, transient=False: seen.append((m, transient)))
+    s.rollback()
+    assert ("Reading bounty_targets...", False) in seen
+    assert ("  bounty listings 1/5: hackerone", True) in seen
