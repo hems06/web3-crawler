@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -55,14 +56,29 @@ MAX_WAIT = 30.0
 # After this many failed calls in a row, the model is turned off for the run.
 MAX_CONSECUTIVE_FAILURES = 3
 
-_state = {"disabled": None, "failures": 0}
+_state = {"disabled": None, "failures": 0, "waited": 0.0, "progress": None}
 _sleep = time.sleep  # replaced in tests
+# One OpenAI request at a time, even when collectors read pages in parallel.
+_call_lock = threading.Lock()
+_cache_lock = threading.Lock()
 
 
 def reset() -> None:
     """Start a new run with the model on (if a key is set)."""
     _state["disabled"] = None
     _state["failures"] = 0
+    _state["waited"] = 0.0
+
+
+def set_progress(fn) -> None:
+    """callable(str, transient=True) for live progress, or None."""
+    _state["progress"] = fn
+
+
+def _note(message: str) -> None:
+    fn = _state["progress"]
+    if fn:
+        fn(f"  {message}", transient=True)
 
 
 def disable(reason: str) -> None:
@@ -165,9 +181,10 @@ def _cache_load(settings: Settings) -> dict:
 
 
 def _cache_put(settings: Settings, key: str, value) -> None:
-    data = _cache_load(settings)
-    data[key] = value
-    _cache_save(settings, data)
+    with _cache_lock:
+        data = _cache_load(settings)
+        data[key] = value
+        _cache_save(settings, data)
 
 
 def _cache_save(settings: Settings, data: dict) -> None:
@@ -192,7 +209,14 @@ def _key(settings: Settings, *parts: str) -> str:
 def _post(messages: list[dict], settings: Settings, client: httpx.Client | None = None) -> dict:
     """One chat completion. Rate limits are retried; a quota or key problem
     raises LLMUnavailable so callers can turn the model off for the run."""
-    client = client or httpx.Client(timeout=60)
+    if _state["disabled"] is not None:
+        raise LLMUnavailable(_state["disabled"])
+    client = client or httpx.Client(timeout=httpx.Timeout(45, connect=10))
+    with _call_lock:
+        return _post_locked(messages, settings, client)
+
+
+def _post_locked(messages: list[dict], settings: Settings, client: httpx.Client) -> dict:
     for attempt in range(MAX_RETRIES + 1):
         resp = client.post(
             f"{settings.openai_base_url.rstrip('/')}/chat/completions",
@@ -210,11 +234,15 @@ def _post(messages: list[dict], settings: Settings, client: httpx.Client | None 
                     "the OpenAI account has no credit left (insufficient_quota); add credit or check the "
                     "monthly budget at https://platform.openai.com/settings/organization/billing"
                 )
-            if attempt < MAX_RETRIES:
-                _sleep(_retry_after(resp, attempt))
+            wait = _retry_after(resp, attempt)
+            if attempt < MAX_RETRIES and _state["waited"] + wait <= settings.llm_max_wait_seconds:
+                _state["waited"] += wait
+                _note(f"OpenAI rate limit: waiting {wait:.0f}s, then retrying ({attempt + 1}/{MAX_RETRIES})")
+                _sleep(wait)
                 continue
             raise LLMUnavailable(
-                "OpenAI kept rate limiting requests (429) after retries; try again later or use a higher-tier account"
+                "OpenAI kept rate limiting requests (429) after waiting "
+                f"{_state['waited']:.0f}s; try again later or raise your OpenAI usage tier"
             )
         if resp.status_code == 401:
             raise LLMUnavailable("the OpenAI API key was rejected (401); run `crawler setup` to enter it again")
@@ -304,6 +332,7 @@ def extract_program(page_text: str, url: str, settings: Settings | None = None, 
     cached = _cache_load(settings).get(key)
     if isinstance(cached, dict):
         return validate(cached, page_text)
+    _note(f"ChatGPT reading {url}")
     try:
         data = _chat(page_text, url, settings, client)
     except Exception as exc:  # noqa: BLE001 - extraction is best effort
@@ -332,7 +361,11 @@ def classify_web3(items: list[dict], settings: Settings | None = None, client: h
             result[i] = cache[k]
         else:
             todo.append(i)
+    batches = (len(todo) + CLASSIFY_BATCH - 1) // CLASSIFY_BATCH
     for start in range(0, len(todo), CLASSIFY_BATCH):
+        if not enabled(settings):
+            break
+        _note(f"ChatGPT Web3 check: batch {start // CLASSIFY_BATCH + 1}/{batches} ({len(todo)} listings)")
         batch = todo[start : start + CLASSIFY_BATCH]
         payload = [{"i": n, **items[i]} for n, i in enumerate(batch)]
         try:
@@ -353,7 +386,8 @@ def classify_web3(items: list[dict], settings: Settings | None = None, client: h
             result[i] = n in chosen
             cache[keys[i]] = n in chosen
     if todo:
-        _cache_save(settings, cache)
+        with _cache_lock:
+            _cache_save(settings, {**_cache_load(settings), **cache})
     return result
 
 

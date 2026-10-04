@@ -55,6 +55,13 @@ before. Run `crawler setup` to change them, `crawler setup --show` to see
 them. Environment variables still override saved values. Set
 `CRAWLER_SKIP_SETUP=1` to never be asked (non-interactive runs are never asked).
 
+While it runs, `crawler` shows which source and item it is on (for example
+`protocols 12/75: aave.com`). Press Ctrl+C to stop; programs found so far
+are kept. Each page request has a hard limit (`FETCH_TIMEOUT_SECONDS`,
+default 30), protocol sites are read 8 at a time (`workers` in
+`config/sources.yaml`), and OpenAI rate-limit waits are capped at
+`LLM_MAX_WAIT_SECONDS` (default 60) per run.
+
 ```bash
 crawler                       # discover, then list private candidates and next steps
 crawler private --exclude immunefi

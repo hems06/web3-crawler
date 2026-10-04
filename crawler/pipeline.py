@@ -35,6 +35,7 @@ class DiscoveryResult:
     updated: list[int] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    interrupted: bool = False
 
 
 def sync_platforms(session: Session, pc: PlatformConfig) -> dict[str, Platform]:
@@ -113,6 +114,60 @@ def _record_listed_scope(session: Session, program: Program, np: NormalizedProgr
         program.scope_status = ScopeStatus.LISTED
 
 
+def _ingest(session, raw, collector, pc, platforms, scoring_cfg, result) -> None:
+    """Store one collected program right away, so an interrupted run keeps it."""
+    try:
+        np = normalize(raw, collector.name)
+    except ValueError as exc:
+        result.errors.append(f"{collector.name}: {exc}")
+        return
+    if np.platform in pc.excluded_platforms:
+        result.skipped.append(f"{np.name} ({np.platform} excluded)")
+        return
+    program, created = upsert_program(session, np, pc, platforms)
+    _record_listed_scope(session, program, np)
+    classification, reasons = classify(np)
+    changed = classification != program.classification
+    program.classification = classification
+    program.classification_reasons = reasons
+    if created:
+        audit.record(
+            session,
+            AuditEventType.PROGRAM_DISCOVERED,
+            program.id,
+            name=program.name,
+            platform=np.platform,
+            source_url=program.source_url,
+            collector=collector.name,
+        )
+        result.new.append(program.id)
+    else:
+        result.updated.append(program.id)
+    if created or changed:
+        audit.record(
+            session,
+            AuditEventType.PROGRAM_CLASSIFIED,
+            program.id,
+            classification=classification,
+            reasons=reasons,
+        )
+    if classification == Classification.VDP_ONLY and program.authorization_status in (
+        AuthState.DISCOVERED,
+        AuthState.PRIVATE_CANDIDATE,
+    ):
+        transition(session, program, AuthState.VDP_ONLY, "classified as VDP only")
+    if classification in PRIVATE_CLASSES and program.authorization_status == AuthState.DISCOVERED:
+        transition(session, program, AuthState.PRIVATE_CANDIDATE, f"classified {classification}")
+        notifications.notify(
+            session,
+            notifications.PRIVATE_PROGRAM_DISCOVERED,
+            f"Private program candidate: {program.name} ({classification}). "
+            "Generate an authorization request before any testing.",
+            program.id,
+        )
+    program.opportunity_score = scoring.score(program, cfg=scoring_cfg)
+
+
 def discover(
     session: Session,
     collectors: list[Collector] | None = None,
@@ -128,68 +183,29 @@ def discover(
     result = DiscoveryResult()
     scoring_cfg = settings.load_yaml("scoring.yaml")
 
+    llm.set_progress(progress)
     for collector in collectors:
         if not collector.enabled():
             continue
         if progress:
             progress(f"Reading {collector.name}...")
+        collector.progress = (lambda m: progress(f"  {m}", transient=True)) if progress else None
+        count = 0
         try:
-            raws = list(collector.collect())
+            for raw in collector.collect():
+                count += 1
+                _ingest(session, raw, collector, pc, platforms, scoring_cfg, result)
+        except KeyboardInterrupt:
+            # Ctrl+C: keep what was found so far and stop.
+            result.interrupted = True
+            result.by_collector[collector.name] = count
+            break
         except Exception as exc:  # noqa: BLE001
             log.exception("collector %s failed", collector.name)
             result.errors.append(f"{collector.name}: {exc}")
-            continue
-        result.by_collector[collector.name] = len(raws)
-        for raw in raws:
-            try:
-                np = normalize(raw, collector.name)
-            except ValueError as exc:
-                result.errors.append(f"{collector.name}: {exc}")
-                continue
-            if np.platform in pc.excluded_platforms:
-                result.skipped.append(f"{np.name} ({np.platform} excluded)")
-                continue
-            program, created = upsert_program(session, np, pc, platforms)
-            _record_listed_scope(session, program, np)
-            classification, reasons = classify(np)
-            changed = classification != program.classification
-            program.classification = classification
-            program.classification_reasons = reasons
-            if created:
-                audit.record(
-                    session,
-                    AuditEventType.PROGRAM_DISCOVERED,
-                    program.id,
-                    name=program.name,
-                    platform=np.platform,
-                    source_url=program.source_url,
-                    collector=collector.name,
-                )
-                result.new.append(program.id)
-            else:
-                result.updated.append(program.id)
-            if created or changed:
-                audit.record(
-                    session,
-                    AuditEventType.PROGRAM_CLASSIFIED,
-                    program.id,
-                    classification=classification,
-                    reasons=reasons,
-                )
-            if classification == Classification.VDP_ONLY and program.authorization_status in (
-                AuthState.DISCOVERED,
-                AuthState.PRIVATE_CANDIDATE,
-            ):
-                transition(session, program, AuthState.VDP_ONLY, "classified as VDP only")
-            if classification in PRIVATE_CLASSES and program.authorization_status == AuthState.DISCOVERED:
-                transition(session, program, AuthState.PRIVATE_CANDIDATE, f"classified {classification}")
-                notifications.notify(
-                    session,
-                    notifications.PRIVATE_PROGRAM_DISCOVERED,
-                    f"Private program candidate: {program.name} ({classification}). "
-                    "Generate an authorization request before any testing.",
-                    program.id,
-                )
-            program.opportunity_score = scoring.score(program, cfg=scoring_cfg)
+        finally:
+            collector.progress = None
+        result.by_collector[collector.name] = count
+    llm.set_progress(None)
     session.flush()
     return result

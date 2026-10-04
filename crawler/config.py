@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     hackerone_api_token: str = ""
     crawler_user_agent: str = "web3-crawler/0.1 (+authorization-first research tool)"
     request_delay_seconds: float = 2.0
+    fetch_timeout_seconds: float = 30.0  # hard limit per page request
 
     etherscan_api_key: str = ""
 
@@ -77,6 +78,9 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
     llm_max_pages: int = 50  # per discovery run, to bound cost
+    # Most time a run spends waiting on OpenAI rate limits before it turns
+    # the model off and carries on without it.
+    llm_max_wait_seconds: float = 60.0
     # Model answers are cached so repeated runs only pay for new pages.
     llm_cache_file: str = ""  # default ~/.cache/web3-crawler/llm.json
     notify_webhook_url: str = ""

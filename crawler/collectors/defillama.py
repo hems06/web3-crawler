@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -150,7 +152,8 @@ class DefiLlamaSecurityTxtCollector(Collector):
     def collect(self):
         cfg = self.config()
         try:
-            resp = self.fetcher.get(cfg.get("protocols_url", "https://api.llama.fi/protocols"))
+            self.note("protocol list from DefiLlama")
+            resp = self.fetcher.get(cfg.get("protocols_url", "https://api.llama.fi/protocols"), deadline=120)
             resp.raise_for_status()
             protocols = resp.json()
         except Exception as exc:  # noqa: BLE001
@@ -160,19 +163,43 @@ class DefiLlamaSecurityTxtCollector(Collector):
             protocols, int(cfg.get("top_n", 75)), float(cfg.get("min_tvl_usd", 0)), cfg.get("exclude_categories") or []
         )
         self._llm_budget = self.settings.llm_max_pages
+        self._budget_lock = threading.Lock()
+        self._stop = threading.Event()
         homepage_fallback = cfg.get("homepage_fallback", True)
-        for protocol in chosen:
-            raw = self._from_security_txt(protocol)
-            if raw is None and homepage_fallback:
-                raw = self._from_homepage(protocol)
-            if raw is not None:
-                yield raw
+        # Each protocol is a different site, so several are read at once;
+        # requests to any one site stay rate limited by the fetcher.
+        workers = max(1, int(cfg.get("workers", 8)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        futures = {pool.submit(self._one, p, homepage_fallback): p for p in chosen}
+        try:
+            for done, fut in enumerate(as_completed(futures), 1):
+                self.note(f"protocols {done}/{len(chosen)}: {futures[fut]['_host']}")
+                try:
+                    raw = fut.result()
+                except Exception as exc:  # noqa: BLE001 - one site failing must not stop the rest
+                    log.info("skipped %s: %s", futures[fut]["_host"], exc)
+                    continue
+                if raw is not None:
+                    yield raw
+        finally:
+            # Ctrl+C or an early stop: don't start the remaining sites.
+            self._stop.set()
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _one(self, protocol: dict, homepage_fallback: bool) -> dict | None:
+        if self._stop.is_set():
+            return None
+        raw = self._from_security_txt(protocol)
+        if raw is None and homepage_fallback and not self._stop.is_set():
+            raw = self._from_homepage(protocol)
+        return raw
 
     def _use_llm(self) -> bool:
-        if llm.enabled(self.settings) and self._llm_budget > 0:
-            self._llm_budget -= 1
-            return True
-        return False
+        with self._budget_lock:
+            if llm.enabled(self.settings) and self._llm_budget > 0:
+                self._llm_budget -= 1
+                return True
+            return False
 
     def _from_security_txt(self, protocol: dict) -> dict | None:
         for path in ("/.well-known/security.txt", "/security.txt"):
@@ -199,6 +226,8 @@ class DefiLlamaSecurityTxtCollector(Collector):
         if r.status_code != 200 or "html" not in r.headers.get("content-type", "html"):
             return None
         for link in security_links(r.text, home)[:2]:
+            if self._stop.is_set():
+                return None
             if platform_for([link]):
                 # A bounty platform listing: record it without fetching the platform.
                 return page_raw(protocol, link, "")
