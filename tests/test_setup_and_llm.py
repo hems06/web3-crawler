@@ -168,3 +168,60 @@ def test_defillama_homepage_fallback(set_env, monkeypatch):
     r = rows[0]
     assert r["security_email"] == "security@lendr.example" and r["program_url"] == "https://lendr.example/security"
     assert r["program_type"] == "invite_only" and r["extracted_by"] == "openai"
+
+
+# ------------------------------------------------------------- 429 handling
+def _err(status, code, headers=None):
+    return httpx.Response(status, json={"error": {"code": code, "type": code, "message": "x"}}, headers=headers or {})
+
+
+def test_rate_limit_is_retried_with_retry_after(set_env, monkeypatch):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    waits, calls = [], []
+    monkeypatch.setattr(llm, "_sleep", waits.append)
+
+    def handler(req):
+        calls.append(1)
+        if len(calls) < 3:
+            return _err(429, "rate_limit_exceeded", {"retry-after": "1.5"})
+        return _reply({"program_type": "public"})
+
+    out = llm.extract_program("Bug bounty page.", "https://r.example", s, httpx.Client(transport=httpx.MockTransport(handler)))
+    assert out["program_type"] == "public" and waits == [1.5, 1.5] and llm.enabled(s)
+
+
+def test_no_quota_turns_model_off_once(set_env, caplog):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return _err(429, "insufficient_quota")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    items = [{"name": "A", "website": "", "targets": []}]
+    with caplog.at_level("WARNING", logger="crawler.llm"):
+        assert llm.classify_web3(items, s, client) == [False]
+        assert llm.extract_program("Bug bounty.", "https://q.example", s, client) == {}
+        assert llm.extract_program("Bug bounty 2.", "https://q.example", s, client) == {}
+    assert len(calls) == 1  # no retries for quota, and no calls after turning off
+    assert not llm.enabled(s) and "no credit" in llm.disabled_reason()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "Crawling continues without it" in warnings[0].getMessage()
+    llm.reset()
+    assert llm.enabled(s)
+
+
+def test_persistent_rate_limit_turns_model_off(set_env):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: _err(429, "rate_limit_exceeded")))
+    assert llm.extract_program("Bug bounty.", "https://p.example", s, client) == {}
+    assert "rate limiting" in llm.disabled_reason()
+
+
+def test_repeated_other_failures_turn_model_off(set_env):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    for i in range(llm.MAX_CONSECUTIVE_FAILURES):
+        llm.extract_program(f"Bug bounty {i}.", "https://p.example", s, client)
+    assert not llm.enabled(s) and "in a row" in llm.disabled_reason()

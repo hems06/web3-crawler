@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -47,8 +48,69 @@ class LLMUnavailable(RuntimeError):
     pass
 
 
+# Rate limits are retried with backoff, honouring Retry-After, up to this
+# many times per call and this many seconds of waiting per call.
+MAX_RETRIES = 3
+MAX_WAIT = 30.0
+# After this many failed calls in a row, the model is turned off for the run.
+MAX_CONSECUTIVE_FAILURES = 3
+
+_state = {"disabled": None, "failures": 0}
+_sleep = time.sleep  # replaced in tests
+
+
+def reset() -> None:
+    """Start a new run with the model on (if a key is set)."""
+    _state["disabled"] = None
+    _state["failures"] = 0
+
+
+def disable(reason: str) -> None:
+    """Turn the model off for the rest of this run, saying why once."""
+    if _state["disabled"] is None:
+        _state["disabled"] = reason
+        log.warning("ChatGPT turned off for the rest of this run: %s. Crawling continues without it.", reason)
+
+
+def disabled_reason() -> str | None:
+    return _state["disabled"]
+
+
 def enabled(settings: Settings | None = None) -> bool:
-    return bool((settings or get_settings()).openai_api_key)
+    return bool((settings or get_settings()).openai_api_key) and _state["disabled"] is None
+
+
+def _error_code(resp: httpx.Response) -> str:
+    try:
+        err = resp.json().get("error") or {}
+        return str(err.get("code") or err.get("type") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _retry_after(resp: httpx.Response, attempt: int) -> float:
+    for header in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+        value = resp.headers.get(header, "")
+        m = re.fullmatch(r"\s*([\d.]+)\s*(ms|s)?\s*", value)
+        if m:
+            secs = float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)
+            return min(max(secs, 0.5), MAX_WAIT)
+    return min(2.0 * (2**attempt), MAX_WAIT)
+
+
+def _failed(exc: Exception) -> None:
+    """Count a failed call; turn the model off when it keeps failing."""
+    _state["failures"] += 1
+    if isinstance(exc, LLMUnavailable):
+        disable(str(exc))
+    elif _state["failures"] >= MAX_CONSECUTIVE_FAILURES:
+        disable(f"{_state['failures']} requests in a row failed (last: {_short(exc)})")
+
+
+def _short(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__
 
 
 CLASSIFY_PROMPT = """You decide which bug bounty programs belong to Web3 / crypto organisations
@@ -128,20 +190,41 @@ def _key(settings: Settings, *parts: str) -> str:
 
 
 def _post(messages: list[dict], settings: Settings, client: httpx.Client | None = None) -> dict:
+    """One chat completion. Rate limits are retried; a quota or key problem
+    raises LLMUnavailable so callers can turn the model off for the run."""
     client = client or httpx.Client(timeout=60)
-    resp = client.post(
-        f"{settings.openai_base_url.rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-        json={
-            "model": settings.openai_model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": messages,
-        },
-    )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(content)
+    for attempt in range(MAX_RETRIES + 1):
+        resp = client.post(
+            f"{settings.openai_base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            json={
+                "model": settings.openai_model,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": messages,
+            },
+        )
+        if resp.status_code == 429:
+            if _error_code(resp) == "insufficient_quota":
+                raise LLMUnavailable(
+                    "the OpenAI account has no credit left (insufficient_quota); add credit or check the "
+                    "monthly budget at https://platform.openai.com/settings/organization/billing"
+                )
+            if attempt < MAX_RETRIES:
+                _sleep(_retry_after(resp, attempt))
+                continue
+            raise LLMUnavailable(
+                "OpenAI kept rate limiting requests (429) after retries; try again later or use a higher-tier account"
+            )
+        if resp.status_code == 401:
+            raise LLMUnavailable("the OpenAI API key was rejected (401); run `crawler setup` to enter it again")
+        if resp.status_code == 404 and _error_code(resp) == "model_not_found":
+            raise LLMUnavailable(f"model {settings.openai_model!r} is not available to this key; run `crawler setup`")
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        _state["failures"] = 0
+        return json.loads(content)
+    raise AssertionError("unreachable")
 
 
 def _chat(text: str, url: str, settings: Settings, client: httpx.Client | None = None) -> dict:
@@ -224,7 +307,8 @@ def extract_program(page_text: str, url: str, settings: Settings | None = None, 
     try:
         data = _chat(page_text, url, settings, client)
     except Exception as exc:  # noqa: BLE001 - extraction is best effort
-        log.warning("LLM extraction failed for %s: %s", url, exc)
+        log.info("LLM extraction failed for %s: %s", url, _short(exc))
+        _failed(exc)
         return {}
     _cache_put(settings, key, data)
     return validate(data, page_text)
@@ -261,7 +345,8 @@ def classify_web3(items: list[dict], settings: Settings | None = None, client: h
                 client,
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning("LLM Web3 classification failed: %s", exc)
+            log.info("LLM Web3 classification failed: %s", _short(exc))
+            _failed(exc)
             break
         chosen = {n for n in data.get("web3") or [] if isinstance(n, int) and 0 <= n < len(batch)}
         for n, i in enumerate(batch):

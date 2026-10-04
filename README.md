@@ -144,6 +144,11 @@ OpenAI-compatible endpoint). Discovery then uses the model in three places:
   pays for new or changed pages; `LLM_MAX_PAGES` (default 50) caps page
   reads per source per run.
 
+If OpenAI rate limits a request (HTTP 429), the crawler waits as long as
+OpenAI asks and retries. If the account has no credit (`insufficient_quota`),
+the key is rejected, or requests keep failing, it prints one line saying why
+and finishes the run without the model.
+
 Every contact and scope value the model returns must appear in the page
 text, or it is dropped. The model only fills discovery fields; it never
 changes authorization, scope confirmation or the research gate.

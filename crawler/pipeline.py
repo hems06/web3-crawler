@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit, notifications, scoring
+from . import audit, llm, notifications, scoring
 from .authorization.state_machine import transition
 from .classifier import classify
 from .collectors import REGISTRY, Collector
@@ -121,6 +121,7 @@ def discover(
     progress=None,
 ) -> DiscoveryResult:
     settings = settings or get_settings()
+    llm.reset()
     pc = PlatformConfig(settings.load_yaml("platforms.yaml"), settings.platform_exclusion_list + list(extra_exclusions or []))
     platforms = sync_platforms(session, pc)
     collectors = collectors if collectors is not None else [cls(settings) for cls in REGISTRY.values()]

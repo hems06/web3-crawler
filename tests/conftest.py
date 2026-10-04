@@ -32,6 +32,10 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(BountyTargetsCollector, "enabled", lambda self: False)
     monkeypatch.setattr(DefiLlamaSecurityTxtCollector, "enabled", lambda self: False)
+    from crawler import llm
+
+    llm.reset()
+    monkeypatch.setattr(llm, "_sleep", lambda s: None)
     config.get_settings.cache_clear()
     db.configure(url)
     yield
