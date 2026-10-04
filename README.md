@@ -43,6 +43,15 @@ Docker is also an option: `docker compose up --build`.
 
 ## Quick start
 
+The first time you run `crawler` in a terminal it asks, once, for your name
+and contact email (used in authorization emails), your SMTP settings and an
+optional OpenAI API key and model. Press Enter to skip any of them. Answers
+are saved to `~/.config/web3-crawler/config.json` (file 0600; the API key
+goes in the OS keyring when one is available) and SMTP to its own file as
+before. Run `crawler setup` to change them, `crawler setup --show` to see
+them. Environment variables still override saved values. Set
+`CRAWLER_SKIP_SETUP=1` to never be asked (non-interactive runs are never asked).
+
 ```bash
 crawler                       # discover, then list private candidates and next steps
 crawler private --exclude immunefi
@@ -108,19 +117,33 @@ These need something from you:
 | `security_txt` | domains in `config/watchlist.yaml` |
 | `program_page` | public security pages in `config/watchlist.yaml` |
 | `seed` | your own entries in `config/seeds/*.yaml` (see `example.yaml.sample`) |
-| ChatGPT extraction | `OPENAI_API_KEY` (optional, see below) |
+| ChatGPT extraction | an OpenAI API key from `crawler setup` or `OPENAI_API_KEY` (optional, see below) |
 
-### ChatGPT extraction (optional)
+### ChatGPT (optional)
 
-Set `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`, default `gpt-4o-mini`,
-or `OPENAI_BASE_URL` for any OpenAI-compatible endpoint). Discovery then
-sends the text of public pages it already reads (watchlist program pages,
-and the security policy page linked from each protocol's `security.txt`) to
-the model and asks for program type, max bounty, severity, scope, contacts
-and private/invite-only signals. Every contact and scope value the model
-returns must appear in the page text, or it is dropped. The model only fills
-discovery fields; it never changes authorization, scope confirmation or the
-research gate. `LLM_MAX_PAGES` (default 50) caps pages per run.
+Give an OpenAI API key in `crawler setup` (or set `OPENAI_API_KEY`; model
+via `OPENAI_MODEL`, default `gpt-4o-mini`; `OPENAI_BASE_URL` for any
+OpenAI-compatible endpoint). Discovery then uses the model in three places:
+
+- **Finding Web3 programs the keywords miss.** Listings from
+  bounty-targets-data that no keyword or smart-contract asset matched are
+  sent in batches (name, website, a few targets) and the model says which
+  belong to Web3 organisations. Turn off with `llm_classify: false` in
+  `config/sources.yaml`.
+- **Reading program pages.** Watchlist pages, the policy page linked from a
+  protocol's `security.txt`, and (new) the security or bug bounty page
+  linked from a protocol's homepage when it has no `security.txt`
+  (`homepage_fallback` in `config/sources.yaml`). The model returns program
+  type, max bounty, severity, scope, contacts and private/invite signals.
+- **Keeping cost down.** Only the sentences of a page that talk about
+  bounty, scope, contacts or contracts are sent; answers are cached in
+  `~/.cache/web3-crawler/llm.json` (`LLM_CACHE_FILE`) so a repeat run only
+  pays for new or changed pages; `LLM_MAX_PAGES` (default 50) caps page
+  reads per source per run.
+
+Every contact and scope value the model returns must appear in the page
+text, or it is dropped. The model only fills discovery fields; it never
+changes authorization, scope confirmation or the research gate.
 
 Collectors read only public pages and official APIs you hold credentials
 for. The fetcher honours `robots.txt`, identifies itself, rate limits per
@@ -320,6 +343,7 @@ crawler notifications [--all]
 crawler discover [--collector NAME] [--seed FILE] [--exclude PLATFORM]
 crawler programs | private [--exclude P] [--classification C] [--min-bounty N] [--[no-]invite-required ...] [--json]
 crawler authorize generate|list|show|approve|send|mark-sent
+crawler setup [--show] [--forget-openai-key]
 crawler email setup|show|test|forget
 crawler verify response|apply|confirm|bounty|expire|inbox
 crawler scope show|import|check

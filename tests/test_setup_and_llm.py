@@ -1,0 +1,170 @@
+import json
+
+import httpx
+from click.testing import CliRunner
+
+from crawler import cli, config, llm, user_config
+from crawler.collectors.bounty_targets import BountyTargetsCollector
+from crawler.collectors.defillama import DefiLlamaSecurityTxtCollector, security_links
+
+from .test_public_sources import H1, _fetcher
+
+
+def _settings():
+    config.get_settings.cache_clear()
+    return config.get_settings()
+
+
+# ------------------------------------------------------------------ setup
+def test_setup_saves_answers_once(monkeypatch):
+    monkeypatch.setattr(llm, "check_key", lambda s: None)
+    # name, contact, skip SMTP, API key, model
+    answers = "Ada\nada@example.org\nn\nsk-live-123\ngpt-4o\n"
+    result = CliRunner().invoke(cli.main, ["setup"], input=answers)
+    assert result.exit_code == 0, result.output
+    assert "Key works." in result.output and "won't be asked again" in result.output
+    assert user_config.setup_done()
+    s = _settings()
+    assert (s.researcher_name, s.researcher_contact, s.openai_api_key, s.openai_model) == ("Ada", "ada@example.org", "sk-live-123", "gpt-4o")
+
+    shown = CliRunner().invoke(cli.main, ["setup", "--show"])
+    assert "openai_api_key: set" in shown.output and "sk-live-123" not in shown.output
+    assert oct(user_config.path().stat().st_mode & 0o777) == "0o600"
+
+
+def test_saved_values_beat_dotenv_but_not_env(tmp_path, monkeypatch, set_env):
+    user_config.save({"researcher_name": "Saved", "openai_api_key": "sk-saved"})
+    (tmp_path / ".env").write_text("RESEARCHER_NAME=Your Name\nOPENAI_API_KEY=\n")
+    s = _settings()
+    assert s.researcher_name == "Saved" and s.openai_api_key == "sk-saved"
+    assert set_env(OPENAI_API_KEY="sk-env").openai_api_key == "sk-env"
+
+
+def test_first_run_prompt_only_on_a_terminal(monkeypatch):
+    assert not cli._should_offer_setup()  # tests are not a TTY
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    assert cli._should_offer_setup()
+    user_config.save({"setup_completed": True})
+    assert not cli._should_offer_setup()
+
+
+def test_skipping_everything_still_marks_setup_done():
+    result = CliRunner().invoke(cli.main, ["setup"], input="\n\nn\n\n")
+    assert result.exit_code == 0, result.output
+    assert user_config.setup_done() and not _settings().openai_api_key
+
+
+def test_forget_openai_key():
+    user_config.save({"openai_api_key": "sk-x", "setup_completed": True})
+    CliRunner().invoke(cli.main, ["setup", "--forget-openai-key"])
+    assert not _settings().openai_api_key and user_config.setup_done()
+
+
+# -------------------------------------------------------------------- llm
+def test_focus_text_keeps_program_details():
+    filler = "Swap tokens fast with our app today. " * 600
+    page = filler + "The bug bounty pays up to $1,000,000 for critical bugs. Email security@x.example. " + filler
+    out = llm.focus_text(page, limit=2000)
+    assert len(out) <= 2000 and "$1,000,000" in out and "security@x.example" in out
+    assert llm.focus_text("short page") == "short page"
+
+
+def _reply(payload):
+    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload)}}]})
+
+
+def test_extraction_is_cached(set_env):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return _reply({"program_type": "public", "max_bounty": "$5,000"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    page = "Bug bounty up to $5,000."
+    assert llm.extract_program(page, "https://a.example/sec", s, client)["max_bounty"] == "$5,000"
+    assert llm.extract_program(page, "https://a.example/sec", s, client)["max_bounty"] == "$5,000"
+    assert len(calls) == 1
+    llm.extract_program(page + " Changed.", "https://a.example/sec", s, client)
+    assert len(calls) == 2
+
+
+def test_classify_web3_batches_and_caches(set_env, monkeypatch):
+    s = set_env(OPENAI_API_KEY="sk-test")
+    monkeypatch.setattr(llm, "CLASSIFY_BATCH", 2)
+    seen = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["messages"][1]["content"])
+        seen.append(len(items))
+        # Web3 = names starting with "Chain"; also an out-of-range index to ignore.
+        return _reply({"web3": [it["i"] for it in items if it["name"].startswith("Chain")] + [99]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    items = [{"name": n, "website": "", "targets": []} for n in ("Chainlet", "Shop", "ChainPay")]
+    assert llm.classify_web3(items, s, client) == [True, False, True]
+    assert seen == [2, 1]
+    assert llm.classify_web3(items, s, client) == [True, False, True]
+    assert seen == [2, 1]  # answered from cache
+
+
+def test_bounty_targets_asks_model_about_keyword_misses(set_env, monkeypatch):
+    set_env(OPENAI_API_KEY="sk-test")
+    plain = {"handle": "ledgerly", "name": "Ledgerly", "url": "https://hackerone.com/ledgerly", "offers_bounties": True, "targets": {}}
+    shop = {"handle": "shop", "name": "Plain Shop", "url": "https://hackerone.com/shop", "targets": {}}
+    asked = []
+
+    def fake_classify(items, settings=None, client=None):
+        asked.extend(i["name"] for i in items)
+        return [i["name"] == "Ledgerly" for i in items]
+
+    monkeypatch.setattr(llm, "classify_web3", fake_classify)
+
+    def handler(req):
+        if req.url.path.endswith("robots.txt"):
+            return httpx.Response(404)
+        if req.url.path.endswith("hackerone_data.json"):
+            return httpx.Response(200, json=[H1, plain, shop])
+        return httpx.Response(200, json=[])
+
+    rows = list(BountyTargetsCollector(config.get_settings(), fetcher=_fetcher(handler)).collect())
+    assert [r["name"] for r in rows] == ["ChainX", "Ledgerly"]
+    assert asked == ["Ledgerly", "Plain Shop"]  # ChainX matched without the model
+    assert "model review" in rows[1]["notes"]
+
+
+HOME = """<html><body><a href="/docs">Docs</a><a href="/security">Security</a>
+<a href="https://immunefi.com/bug-bounty/vaultx">Bug bounty</a></body></html>"""
+
+
+def test_security_links_ranked():
+    links = security_links(HOME, "https://vaultx.example/")
+    assert links[0] == "https://immunefi.com/bug-bounty/vaultx"
+    assert "https://vaultx.example/security" in links and "https://vaultx.example/docs" not in links
+
+
+def test_defillama_homepage_fallback(set_env, monkeypatch):
+    set_env(OPENAI_API_KEY="sk-test")
+    protocols = [{"name": "Lendr", "slug": "lendr", "url": "https://lendr.example", "tvl": 5e9, "category": "Lending"}]
+    page = "<html><body>Security. Report vulnerabilities to security@lendr.example. Bug bounty by invitation only.</body></html>"
+    monkeypatch.setattr(llm, "extract_program", lambda text, url, settings=None, client=None: {"program_type": "invite_only", "max_bounty": "$100,000"})
+
+    def handler(req):
+        host, path = req.url.host, req.url.path
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "api.llama.fi":
+            return httpx.Response(200, json=protocols)
+        if host == "lendr.example" and path == "/":
+            return httpx.Response(200, text='<a href="/security">Security</a>', headers={"content-type": "text/html"})
+        if host == "lendr.example" and path == "/security":
+            return httpx.Response(200, text=page, headers={"content-type": "text/html"})
+        return httpx.Response(404)
+
+    rows = list(DefiLlamaSecurityTxtCollector(config.get_settings(), fetcher=_fetcher(handler)).collect())
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["security_email"] == "security@lendr.example" and r["program_url"] == "https://lendr.example/security"
+    assert r["program_type"] == "invite_only" and r["extracted_by"] == "openai"

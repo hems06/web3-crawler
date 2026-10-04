@@ -39,6 +39,9 @@ bounty_targets:
     - chainlink
     - metamask
     - opensea
+  # With an OpenAI key, programs the keywords miss are sent (name, website,
+  # a few targets) to the model in batches to ask whether they are Web3.
+  llm_classify: true
 
 # Web3 protocols from DefiLlama's public protocol list, checked for an
 # RFC 9116 security.txt. A protocol that publishes a security contact but no
@@ -49,3 +52,6 @@ defillama_security_txt:
   top_n: 75            # largest protocols by TVL
   min_tvl_usd: 1000000
   exclude_categories: [CEX]
+  # No security.txt: look for a security / bug bounty link on the homepage
+  # and read that page (with the model, when an OpenAI key is set).
+  homepage_fallback: true

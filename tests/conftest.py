@@ -15,12 +15,18 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PRIVATE_ONLY", "true")
     monkeypatch.setenv("REQUEST_DELAY_SECONDS", "0")
     monkeypatch.setenv("SMTP_CONFIG_FILE", str(tmp_path / "smtpconf" / "smtp.json"))
-    for var in ("EMAIL_PROVIDER", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"):
+    monkeypatch.setenv("CRAWLER_USER_CONFIG", str(tmp_path / "userconf" / "config.json"))
+    monkeypatch.setenv("LLM_CACHE_FILE", str(tmp_path / "cache" / "llm.json"))
+    for var in ("EMAIL_PROVIDER", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
+                "OPENAI_API_KEY", "OPENAI_MODEL", "RESEARCHER_NAME", "RESEARCHER_CONTACT", "CRAWLER_SKIP_SETUP"):
         monkeypatch.delenv(var, raising=False)
     # Never touch a real OS keyring from tests.
     from crawler.authorization import smtp_service
 
     monkeypatch.setattr(smtp_service, "_keyring", lambda: None)
+    from crawler import user_config
+
+    monkeypatch.setattr(user_config, "_keyring", lambda: None)
     # No network in tests: the public-source collectors are tested with fixtures.
     from crawler.collectors import BountyTargetsCollector, DefiLlamaSecurityTxtCollector
 

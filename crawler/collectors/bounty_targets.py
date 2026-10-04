@@ -13,6 +13,7 @@ import json
 import logging
 import re
 
+from .. import llm
 from ..scope.engine import ADDRESS_RE, REPO_RE
 from .base import Collector
 
@@ -67,6 +68,17 @@ def is_web3(entry: dict, keywords: list[str]) -> bool:
         if re.search(r"\b" + pattern + r"\b", text, re.I):
             return True
     return False
+
+
+def describe(entry: dict) -> dict:
+    """Compact description of a listing for the model's Web3 check."""
+    targets = (entry.get("targets") or {}).get("in_scope") or []
+    idents = []
+    for t in targets:
+        ident = next((t.get(k) for k in ("asset_identifier", "uri", "target", "endpoint") if t.get(k)), None)
+        if ident and len(idents) < 6:
+            idents.append(str(ident)[:80])
+    return {"name": str(entry.get("name") or entry.get("handle") or "")[:80], "website": str(entry.get("website") or entry.get("url") or "")[:100], "targets": idents}
 
 
 def from_hackerone(e: dict) -> dict:
@@ -195,8 +207,24 @@ class BountyTargetsCollector(Collector):
             except Exception as exc:  # noqa: BLE001 - one platform failing must not stop the rest
                 log.warning("could not read %s: %s", url, exc)
                 continue
+            unsure = []
             for entry in entries:
                 if is_web3(entry, keywords):
-                    raw = convert(entry)
-                    raw["source_url"] = url
-                    yield raw
+                    yield self._raw(convert, entry, url)
+                else:
+                    unsure.append(entry)
+            # Keywords miss Web3 companies with plain names. With an API key,
+            # the model reviews the rest in batches (cached per program).
+            if unsure and llm.enabled(self.settings) and cfg.get("llm_classify", True):
+                verdicts = llm.classify_web3([describe(e) for e in unsure], self.settings)
+                for entry, is_w3 in zip(unsure, verdicts):
+                    if is_w3:
+                        raw = self._raw(convert, entry, url)
+                        raw["notes"] = ((raw.get("notes") or "") + "; Web3 per model review").lstrip("; ")
+                        yield raw
+
+    @staticmethod
+    def _raw(convert, entry: dict, url: str) -> dict:
+        raw = convert(entry)
+        raw["source_url"] = url
+        return raw

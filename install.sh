@@ -64,7 +64,7 @@ say "Installing web3-crawler[$EXTRAS]"
 if [ ! -f "$SRC/.env" ]; then
   cp "$SRC/.env.example" "$SRC/.env"
   sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=sqlite:///$HOME_DIR/data/crawler.db#" "$SRC/.env" && rm -f "$SRC/.env.bak"
-  say "Created $SRC/.env (set RESEARCHER_NAME and RESEARCHER_CONTACT)"
+  say "Created $SRC/.env (the first crawler run asks for your name, SMTP and OpenAI key)"
 fi
 mkdir -p "$HOME_DIR/data"
 

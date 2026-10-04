@@ -8,7 +8,9 @@ from typing import Any
 
 import yaml
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from .user_config import SavedConfigSource
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,7 +25,7 @@ def _split(value: Any) -> list[str]:
 
 class Settings(BaseSettings):
     # The install's own .env first, then one in the current directory.
-    model_config = SettingsConfigDict(env_file=(REPO_ROOT / ".env", ".env"), extra="ignore")
+    model_config = SettingsConfigDict(env_file=(REPO_ROOT / ".env", ".env"), extra="ignore", env_ignore_empty=True)
 
     database_url: str = "sqlite:///./data/crawler.db"
     redis_url: str = "redis://localhost:6379/0"
@@ -75,7 +77,22 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
     llm_max_pages: int = 50  # per discovery run, to bound cost
+    # Model answers are cached so repeated runs only pay for new pages.
+    llm_cache_file: str = ""  # default ~/.cache/web3-crawler/llm.json
     notify_webhook_url: str = ""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Environment variables win, then values saved by `crawler setup`,
+        # then the .env file (so a placeholder there can't hide your answers).
+        return init_settings, env_settings, SavedConfigSource(settings_cls), dotenv_settings, file_secret_settings
 
     @field_validator("email_provider")
     @classmethod

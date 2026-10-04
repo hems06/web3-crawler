@@ -10,9 +10,13 @@ published channel to ask for authorization.
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
+import re
+from urllib.parse import urljoin, urlparse
+
+from bs4 import BeautifulSoup
 
 from .. import llm
+from ..normalizer import EMAIL_RE
 from .base import Collector, FetchRefused
 from .program_page import page_text
 from .security_txt import parse_security_txt, to_program
@@ -58,6 +62,52 @@ def select_protocols(protocols: list[dict], top_n: int, min_tvl: float, exclude_
         if len(out) >= top_n:
             break
     return out
+
+
+SECURITY_LINK_RE = re.compile(r"bug[\s-]?bounty|security|responsible[\s-]disclosure|vulnerability|audits?\b", re.I)
+
+
+def security_links(html: str, base_url: str) -> list[str]:
+    """Links on a homepage that look like its security or bug bounty page."""
+    soup = BeautifulSoup(html, "html.parser")
+    scored = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a["href"].strip())
+        text = " ".join(a.get_text(" ").split())
+        if not href.startswith("https://"):
+            continue
+        hay = f"{text} {urlparse(href).path}"
+        if not SECURITY_LINK_RE.search(hay):
+            continue
+        score = 3 if re.search(r"bounty", hay, re.I) else 2 if re.search(r"security|disclosure", hay, re.I) else 1
+        if platform_for([href]):
+            score += 2
+        if href not in [h for _, h in scored]:
+            scored.append((score, href))
+    return [h for _, h in sorted(scored, key=lambda x: -x[0])]
+
+
+def page_raw(protocol: dict, url: str, text: str) -> dict | None:
+    """A candidate from a protocol's own security page, or None when the page
+    gives no published way to reach the security team."""
+    emails = [e for e in EMAIL_RE.findall(text) if re.search(r"security|bounty|disclos|bugs?@|whitehat", e, re.I)]
+    platform = platform_for([url])
+    if not emails and not platform:
+        return None
+    raw = {
+        "name": protocol.get("name") or protocol["_host"],
+        "project_name": protocol.get("name"),
+        "protocol_name": protocol.get("name"),
+        "external_id": f"defillama:{protocol.get('slug') or protocol['_host']}",
+        "platform": platform or "direct",
+        "program_url": url,
+        "source_url": url,
+        "program_type": "public" if platform else "unknown",
+        "security_email": emails[0] if emails else None,
+        "notes": f"Security page found from the homepage of {protocol['_host']}.",
+        "raw_defillama": {k: protocol.get(k) for k in ("slug", "category", "chains", "github", "twitter", "tvl")},
+    }
+    return raw
 
 
 def to_raw(protocol: dict, fields: dict, security_txt_url: str) -> dict:
@@ -109,22 +159,66 @@ class DefiLlamaSecurityTxtCollector(Collector):
         chosen = select_protocols(
             protocols, int(cfg.get("top_n", 75)), float(cfg.get("min_tvl_usd", 0)), cfg.get("exclude_categories") or []
         )
-        llm_budget = self.settings.llm_max_pages
+        self._llm_budget = self.settings.llm_max_pages
+        homepage_fallback = cfg.get("homepage_fallback", True)
         for protocol in chosen:
-            for path in ("/.well-known/security.txt", "/security.txt"):
-                url = f"https://{protocol['_host']}{path}"
-                try:
-                    r = self.fetcher.get(url)
-                except (FetchRefused, Exception):  # noqa: BLE001
-                    continue
-                if r.status_code == 200 and "contact:" in r.text.lower() and "<html" not in r.text[:500].lower():
-                    fields = parse_security_txt(r.text)
-                    raw = to_raw(protocol, fields, url)
-                    if llm.enabled(self.settings) and llm_budget > 0 and fields.get("policy"):
-                        llm_budget -= 1
-                        raw = self._enrich_from_policy(raw, fields["policy"][0])
-                    yield raw
-                    break
+            raw = self._from_security_txt(protocol)
+            if raw is None and homepage_fallback:
+                raw = self._from_homepage(protocol)
+            if raw is not None:
+                yield raw
+
+    def _use_llm(self) -> bool:
+        if llm.enabled(self.settings) and self._llm_budget > 0:
+            self._llm_budget -= 1
+            return True
+        return False
+
+    def _from_security_txt(self, protocol: dict) -> dict | None:
+        for path in ("/.well-known/security.txt", "/security.txt"):
+            url = f"https://{protocol['_host']}{path}"
+            try:
+                r = self.fetcher.get(url)
+            except (FetchRefused, Exception):  # noqa: BLE001
+                continue
+            if r.status_code == 200 and "contact:" in r.text.lower() and "<html" not in r.text[:500].lower():
+                fields = parse_security_txt(r.text)
+                raw = to_raw(protocol, fields, url)
+                if fields.get("policy") and self._use_llm():
+                    raw = self._enrich_from_policy(raw, fields["policy"][0])
+                return raw
+        return None
+
+    def _from_homepage(self, protocol: dict) -> dict | None:
+        """No security.txt: follow the homepage's security / bug bounty link."""
+        home = f"https://{protocol['_host']}/"
+        try:
+            r = self.fetcher.get(home)
+        except (FetchRefused, Exception):  # noqa: BLE001
+            return None
+        if r.status_code != 200 or "html" not in r.headers.get("content-type", "html"):
+            return None
+        for link in security_links(r.text, home)[:2]:
+            if platform_for([link]):
+                # A bounty platform listing: record it without fetching the platform.
+                return page_raw(protocol, link, "")
+            try:
+                page = self.fetcher.get(link)
+            except (FetchRefused, Exception):  # noqa: BLE001
+                continue
+            if page.status_code != 200 or "html" not in page.headers.get("content-type", "html"):
+                continue
+            text = page_text(page.text)
+            raw = page_raw(protocol, link, text)
+            if self._use_llm():
+                extracted = llm.extract_program(text, link, self.settings)
+                if raw is None and extracted.get("security_email"):
+                    raw = page_raw(protocol, link, extracted["security_email"])
+                if raw is not None:
+                    raw = llm.merge(raw, extracted)
+            if raw is not None:
+                return raw
+        return None
 
     def _enrich_from_policy(self, raw: dict, policy_url: str) -> dict:
         """Read the security policy page the project links and let the model

@@ -11,13 +11,14 @@ import click
 import yaml
 from sqlalchemy import func, select
 
-from . import audit, reporting, status
+from . import audit, llm, reporting, status, user_config
 from .assets import intelligence
 from .authorization import manager, smtp_service
 from .authorization.response_parser import ParsedResponse
 from .classifier import PRIORITY
 from .collectors import REGISTRY
 from .collectors.seed import SeedCollector
+from . import config as config_module
 from .config import PlatformConfig, get_settings
 from .db import session_scope
 from .enums import AuditEventType, AuthState, RequestStatus, ResearchMethod
@@ -69,8 +70,97 @@ def main(ctx):
     With no command, runs `crawler run`: passive discovery, then the private
     candidates and what each one needs next. It never starts research.
     """
+    if ctx.invoked_subcommand in (None, "run", "discover") and _should_offer_setup():
+        click.echo("First run: a few questions, asked once. Press Enter to skip any of them.\n")
+        _setup_wizard()
+        click.echo()
     if ctx.invoked_subcommand is None:
         ctx.invoke(run)
+
+
+def _should_offer_setup() -> bool:
+    import os
+
+    if os.environ.get("CRAWLER_SKIP_SETUP") or user_config.setup_done():
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _setup_wizard() -> None:
+    settings = get_settings()
+    saved = user_config.load()
+    values: dict = {}
+
+    click.echo("About you (goes in authorization emails)")
+    values["researcher_name"] = click.prompt("  Your name", default=saved.get("researcher_name") or "", show_default=bool(saved.get("researcher_name")))
+    values["researcher_contact"] = click.prompt(
+        "  Contact email", default=saved.get("researcher_contact") or "", show_default=bool(saved.get("researcher_contact"))
+    )
+
+    click.echo("\nEmail sending (SMTP)")
+    if smtp_service.load(settings):
+        click.echo("  Already set up. Change it later with `crawler email setup`.")
+    elif click.confirm("  Set up SMTP now so authorization emails can be sent?", default=True):
+        try:
+            _smtp_setup(settings)
+        except click.Abort:
+            click.echo("  Skipped. Run `crawler email setup` any time.")
+    else:
+        click.echo("  Skipped. Emails stay drafts until you run `crawler email setup`.")
+
+    click.echo("\nChatGPT (optional; reads public program pages and spots Web3 programs)")
+    have_key = bool(settings.openai_api_key)
+    key = click.prompt(
+        "  OpenAI API key" + (" (Enter keeps the current one)" if have_key else " (Enter to skip)"),
+        default="", show_default=False, hide_input=True,
+    ).strip()
+    if key or have_key:
+        model = click.prompt("  Model", default=saved.get("openai_model") or settings.openai_model)
+        values["openai_model"] = model
+        if key:
+            values["openai_api_key"] = key
+            probe = settings.model_copy(update={"openai_api_key": key, "openai_model": model})
+            try:
+                llm.check_key(probe)
+                click.echo("  Key works.")
+            except Exception as exc:  # noqa: BLE001
+                click.echo(f"  Could not verify the key: {exc}")
+                if not click.confirm("  Save it anyway?", default=True):
+                    values.pop("openai_api_key")
+    else:
+        click.echo("  Skipped. Add it later with `crawler setup` or OPENAI_API_KEY.")
+
+    values = {k: v for k, v in values.items() if v not in (None, "")}
+    values["setup_completed"] = True
+    path = user_config.save(values)
+    config_module.get_settings.cache_clear()
+    where = " (API key in the OS keyring)" if "openai_api_key" in values and user_config._keyring() else ""
+    click.echo(f"\nSaved to {path}{where}. You won't be asked again; run `crawler setup` to change anything.")
+
+
+@main.command()
+@click.option("--show", is_flag=True, help="Show the saved settings (secrets hidden).")
+@click.option("--forget-openai-key", is_flag=True, help="Remove the saved OpenAI API key.")
+def setup(show, forget_openai_key):
+    """Set your name, SMTP and OpenAI API key (asked once on first run)."""
+    if forget_openai_key:
+        user_config.forget_secret("openai_api_key")
+        click.echo("Removed the saved OpenAI API key.")
+        return
+    if show:
+        data = user_config.load()
+        if not data:
+            click.echo("Nothing saved yet. Run `crawler setup`.")
+            return
+        click.echo(f"file: {user_config.path()}")
+        for k, v in data.items():
+            if k in user_config.SECRET_KEYS:
+                v = "set" if v else "not set"
+            click.echo(f"{k}: {v}")
+        cfg = smtp_service.load(get_settings())
+        click.echo(f"smtp: {'set up' if cfg else 'not set up'}")
+        return
+    _setup_wizard()
 
 
 @main.command()
