@@ -49,3 +49,20 @@ def test_cli_generate_does_not_send(discovered):
 def test_cli_research_check_blocks(discovered):
     res = CliRunner().invoke(main, ["research", "check", "app.example.com", "--program", "Example Protocol"])
     assert res.exit_code == 2 and "BLOCKED" in res.output
+
+
+def test_bare_crawler_runs_default(discovered):
+    res = CliRunner().invoke(main, ["--help"])
+    assert "run" in res.output
+    res = CliRunner().invoke(main, [])
+    assert res.exit_code == 0, res.output
+    assert "[PRIVATE] Example Protocol" in res.output
+    assert "Next: crawler authorize generate" in res.output
+    assert "nothing is tested automatically" in res.output
+    assert "Discovery:" in res.output
+
+
+def test_run_without_discovery(discovered):
+    res = CliRunner().invoke(main, ["run", "--no-discover"])
+    assert res.exit_code == 0, res.output
+    assert "Discovery:" not in res.output and "Example Protocol" in res.output

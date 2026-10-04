@@ -61,9 +61,16 @@ def _list(session, flt: ProgramFilter) -> list[Program]:
     return sorted(programs, key=lambda p: (PRIORITY.get(p.classification, 9), -p.opportunity_score))
 
 
-@click.group()
-def main():
-    """Authorization-first Web3 bug bounty crawler."""
+@click.group(invoke_without_command=True)
+@click.pass_context
+def main(ctx):
+    """Authorization-first Web3 bug bounty crawler.
+
+    With no command, runs `crawler run`: passive discovery, then the private
+    candidates and what each one needs next. It never starts research.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(run)
 
 
 @main.command()
@@ -83,6 +90,55 @@ def discover(collectors, seeds, exclude):
         click.echo(f"  skipped {line}")
     for err in result.errors:
         click.echo(f"  error {err}", err=True)
+
+
+NEXT_STEP = {
+    AuthState.DISCOVERED: "crawler authorize generate {id}",
+    AuthState.PRIVATE_CANDIDATE: "crawler authorize generate {id}",
+    AuthState.AUTHORIZATION_REQUESTED: "review the draft, send it, then crawler authorize mark-sent",
+    AuthState.AWAITING_RESPONSE: "wait for a reply, then crawler verify response {id}",
+    AuthState.AUTHORIZED: "ask the program to confirm scope",
+    AuthState.SCOPE_UNCLEAR: "ask the program to confirm scope",
+    AuthState.SCOPE_CONFIRMED: "ask the program to confirm bounty terms",
+    AuthState.NO_RESPONSE: "follow up, or crawler authorize generate {id}",
+    AuthState.EXPIRED_AUTHORIZATION: "request renewed authorization: crawler authorize generate {id}",
+}
+
+
+@main.command()
+@click.option("--no-discover", is_flag=True, help="Skip discovery and only show the current state.")
+@click.option("--exclude", multiple=True, help="Skip this platform.")
+def run(no_discover, exclude):
+    """Default command: discover passively, then list private candidates.
+
+    Steps: run every enabled collector, expire stale authorizations, then show
+    private candidates by priority with the next authorization step for each.
+    """
+    settings = get_settings()
+    with session_scope() as s:
+        if not no_discover:
+            result = run_discovery(s, [cls(settings) for cls in REGISTRY.values()], settings, extra_exclusions=list(exclude))
+            click.echo(f"Discovery: {len(result.new)} new, {len(result.updated)} updated, {len(result.skipped)} skipped")
+            for err in result.errors:
+                click.echo(f"  error {err}", err=True)
+        for p in manager.expire_authorizations(s):
+            click.echo(f"Authorization expired: {p.name}")
+        flt = ProgramFilter.from_settings(extra_exclusions=list(exclude))
+        flt.private_only = True
+        candidates = _list(s, flt)
+        click.echo(f"\n{len(candidates)} private candidate(s)\n")
+        for p in candidates:
+            _print_program(p, "PRIVATE")
+            step = NEXT_STEP.get(AuthState(p.authorization_status))
+            if step:
+                click.echo(f"  Next: {step.format(id=p.id)}")
+            click.echo()
+        pending = s.scalars(select(AuthorizationResponse).where(AuthorizationResponse.applied_at.is_(None))).all()
+        if pending:
+            click.echo(f"{len(pending)} reply(ies) waiting for review: " + ", ".join(f"crawler verify apply {r.id}" for r in pending))
+        ready = s.scalars(select(Program).where(Program.authorization_status == AuthState.READY_FOR_RESEARCH)).all()
+        click.echo(f"{len(ready)} program(s) research-ready. Research mode is {'ON' if settings.research_mode else 'OFF'}; "
+                   "nothing is tested automatically.")
 
 
 def _filter_opts(f):

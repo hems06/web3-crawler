@@ -20,7 +20,7 @@ authorization gate allows it, and `RESEARCH_MODE` is `false` by default.
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env          # set RESEARCHER_NAME / RESEARCHER_CONTACT
-crawler discover              # seeds + watchlist + HackerOne (if configured)
+crawler                       # discover, then list private candidates and next steps
 crawler private --exclude immunefi
 crawler authorize generate "Example Protocol"
 ```
@@ -236,6 +236,8 @@ SQLite is the default database; the schema is portable to Postgres
 ## CLI
 
 ```
+crawler                       # default: same as `crawler run`
+crawler run [--no-discover] [--exclude P]   # passive discovery + private candidates with next steps
 crawler discover [--collector NAME] [--seed FILE] [--exclude PLATFORM]
 crawler programs | private [--exclude P] [--classification C] [--min-bounty N] [--[no-]invite-required ...] [--json]
 crawler authorize generate|list|show|approve|send|mark-sent
