@@ -22,7 +22,8 @@ def _split(value: Any) -> list[str]:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # The install's own .env first, then one in the current directory.
+    model_config = SettingsConfigDict(env_file=(REPO_ROOT / ".env", ".env"), extra="ignore")
 
     database_url: str = "sqlite:///./data/crawler.db"
     redis_url: str = "redis://localhost:6379/0"

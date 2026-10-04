@@ -15,11 +15,35 @@ It does not scan, exploit or brute-force anything. Discovery is passive.
 Vulnerability testing is a separate module that cannot run until the
 authorization gate allows it, and `RESEARCH_MODE` is `false` by default.
 
+## Installation
+
+One command (needs Python 3.11+ and git):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hems06/web3-crawler/main/install.sh | bash
+```
+
+From a clone, run `./install.sh` instead. The script creates a virtual
+environment in `~/.web3-crawler`, installs the package, creates `.env` from
+`.env.example` with the database in `~/.web3-crawler/data`, and links
+`crawler` into `~/.local/bin`. Running it again updates an existing install.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WEB3_CRAWLER_HOME` | `~/.web3-crawler` | install directory |
+| `WEB3_CRAWLER_REF` | `main` | branch or tag to install |
+| `WEB3_CRAWLER_BIN` | `~/.local/bin` | where `crawler` is linked |
+| `WITH_DASHBOARD=1` | off | also install dashboard dependencies (Node 20+) |
+| `WITH_KEYRING=1` | off | keep the SMTP password in the OS keyring |
+
+For example: `curl -fsSL .../install.sh | WITH_DASHBOARD=1 WITH_KEYRING=1 bash`.
+
+For a manual install, use `pip install -e ".[dev]"` and `cp .env.example .env`.
+Docker is also an option: `docker compose up --build`.
+
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"
-cp .env.example .env          # set RESEARCHER_NAME / RESEARCHER_CONTACT
 crawler                       # discover, then list private candidates and next steps
 crawler private --exclude immunefi
 crawler authorize generate "Example Protocol"
